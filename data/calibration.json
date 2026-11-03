@@ -1,0 +1,27 @@
+{
+  "game_window": {
+    "x": 50,
+    "y": 80,
+    "w": 850,
+    "h": 650
+  },
+  "card_relative": {
+    "rx": 0.08,
+    "ry": 0.22,
+    "rw": 0.45,
+    "rh": 0.68
+  },
+  "options_relative": {
+    "rx": 0.55,
+    "ry": 0.25,
+    "rw": 0.4,
+    "rh": 0.65
+  },
+  "timer_relative": {
+    "rx": 0.3,
+    "ry": 0.08,
+    "rw": 0.4,
+    "rh": 0.12
+  },
+  "retina_scale": 2.0
+}

@@ -1,0 +1,193 @@
+"""
+src/recognition/image_encoder.py
+
+Visual model abstraction for computing dense, normalized image embeddings.
+Supports DINOv2 and MobileNetV3 with Apple Silicon MPS acceleration and CPU fallback.
+"""
+
+from abc import ABC, abstractmethod
+import logging
+from pathlib import Path
+from typing import Union, List
+
+import numpy as np
+import torch
+import torchvision.transforms as T
+from PIL import Image
+import cv2
+
+logger = logging.getLogger("image_encoder")
+
+
+class BaseImageEncoder(ABC):
+    """Abstract interface for all visual encoders."""
+
+    def __init__(self, device: str = None):
+        if device is None:
+            if torch.backends.mps.is_available():
+                self.device = torch.device("mps")
+            elif torch.cuda.is_available():
+                self.device = torch.device("cuda")
+            else:
+                self.device = torch.device("cpu")
+        else:
+            self.device = torch.device(device)
+        logger.info("Initialized %s on device: %s", self.__class__.__name__, self.device)
+
+    @property
+    @abstractmethod
+    def dimension(self) -> int:
+        """Embedding vector dimension."""
+        pass
+
+    @abstractmethod
+    def encode_image(self, image: Union[np.ndarray, Image.Image, Path, str]) -> np.ndarray:
+        """
+        Encode a single image into a 1D L2-normalized float32 embedding vector.
+        """
+        pass
+
+    @abstractmethod
+    def encode_batch(self, images: List[Union[np.ndarray, Image.Image, Path, str]]) -> np.ndarray:
+        """
+        Encode a batch of images into an (N, D) L2-normalized float32 matrix.
+        """
+        pass
+
+    def _prepare_pil_image(self, img_input: Union[np.ndarray, Image.Image, Path, str]) -> Image.Image:
+        """Converts diverse image inputs into PIL RGB Image."""
+        if isinstance(img_input, (str, Path)):
+            return Image.open(str(img_input)).convert("RGB")
+        elif isinstance(img_input, np.ndarray):
+            if img_input.ndim == 2:
+                rgb = cv2.cvtColor(img_input, cv2.COLOR_GRAY2RGB)
+            elif img_input.shape[2] == 4:
+                rgb = cv2.cvtColor(img_input, cv2.COLOR_BGRA2RGB)
+            else:
+                rgb = cv2.cvtColor(img_input, cv2.COLOR_BGR2RGB)
+            return Image.fromarray(rgb)
+        elif isinstance(img_input, Image.Image):
+            return img_input.convert("RGB")
+        else:
+            raise TypeError(f"Unsupported image type: {type(img_input)}")
+
+
+class DINOv2Encoder(BaseImageEncoder):
+    """
+    DINOv2 (Vision Transformer) encoder.
+    Highly robust to heavy blur, color shifts, and downsampling.
+    Feature dimension: 384 (vit_small).
+    """
+
+    def __init__(self, model_name: str = "vit_small_patch14_dinov2.lvd142m", device: str = None):
+        super().__init__(device=device)
+        import timm
+
+        logger.info("Loading DINOv2 model '%s'...", model_name)
+        self.model = timm.create_model(
+            model_name,
+            pretrained=True,
+            num_classes=0,
+            dynamic_img_size=True
+        ).to(self.device)
+        self.model.eval()
+
+        self.transform = T.Compose([
+            T.Resize((224, 224), interpolation=T.InterpolationMode.BICUBIC),
+            T.ToTensor(),
+            T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+        self._dim = self.model.num_features
+
+    @property
+    def dimension(self) -> int:
+        return self._dim
+
+    def encode_image(self, image: Union[np.ndarray, Image.Image, Path, str]) -> np.ndarray:
+        pil_img = self._prepare_pil_image(image)
+        tensor = self.transform(pil_img).unsqueeze(0).to(self.device)
+
+        with torch.no_grad():
+            features = self.model(tensor)
+            # L2 normalize
+            norm_features = torch.nn.functional.normalize(features, p=2, dim=1)
+            vec = norm_features.cpu().numpy().flatten().astype(np.float32)
+        return vec
+
+    def encode_batch(self, images: List[Union[np.ndarray, Image.Image, Path, str]]) -> np.ndarray:
+        if not images:
+            return np.empty((0, self.dimension), dtype=np.float32)
+
+        tensors = [self.transform(self._prepare_pil_image(im)) for im in images]
+        batch_tensor = torch.stack(tensors).to(self.device)
+
+        with torch.no_grad():
+            features = self.model(batch_tensor)
+            norm_features = torch.nn.functional.normalize(features, p=2, dim=1)
+            matrix = norm_features.cpu().numpy().astype(np.float32)
+        return matrix
+
+
+class MobileNetV3Encoder(BaseImageEncoder):
+    """
+    Lightweight, ultra-fast CNN encoder fallback.
+    Feature dimension: 576.
+    """
+
+    def __init__(self, device: str = None):
+        super().__init__(device=device)
+        import torchvision.models as models
+
+        logger.info("Loading MobileNetV3-Small encoder...")
+        base = models.mobilenet_v3_small(weights=models.MobileNet_V3_Small_Weights.DEFAULT)
+        # Extract features before classification head
+        self.feature_extractor = base.features
+        self.avgpool = base.avgpool
+        self.model = torch.nn.Sequential(self.feature_extractor, self.avgpool, torch.nn.Flatten()).to(self.device)
+        self.model.eval()
+
+        self.transform = T.Compose([
+            T.Resize((224, 224)),
+            T.ToTensor(),
+            T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+        self._dim = 576
+
+    @property
+    def dimension(self) -> int:
+        return self._dim
+
+    def encode_image(self, image: Union[np.ndarray, Image.Image, Path, str]) -> np.ndarray:
+        pil_img = self._prepare_pil_image(image)
+        tensor = self.transform(pil_img).unsqueeze(0).to(self.device)
+
+        with torch.no_grad():
+            features = self.model(tensor)
+            norm_features = torch.nn.functional.normalize(features, p=2, dim=1)
+            vec = norm_features.cpu().numpy().flatten().astype(np.float32)
+        return vec
+
+    def encode_batch(self, images: List[Union[np.ndarray, Image.Image, Path, str]]) -> np.ndarray:
+        if not images:
+            return np.empty((0, self.dimension), dtype=np.float32)
+
+        tensors = [self.transform(self._prepare_pil_image(im)) for im in images]
+        batch_tensor = torch.stack(tensors).to(self.device)
+
+        with torch.no_grad():
+            features = self.model(batch_tensor)
+            norm_features = torch.nn.functional.normalize(features, p=2, dim=1)
+            matrix = norm_features.cpu().numpy().astype(np.float32)
+        return matrix
+
+
+def get_image_encoder(name: str = "dinov2", device: str = None) -> BaseImageEncoder:
+    """Factory function for creating visual encoders."""
+    name_clean = name.lower().strip()
+    if name_clean in ("dinov2", "dino"):
+        return DINOv2Encoder(device=device)
+    elif name_clean in ("mobilenet", "mobilenetv3"):
+        return MobileNetV3Encoder(device=device)
+    else:
+        logger.warning("Unknown encoder '%s', defaulting to DINOv2", name)
+        return DINOv2Encoder(device=device)

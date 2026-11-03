@@ -1,0 +1,19 @@
+{
+  "timestamp": "2026-11-01T00:47:55Z",
+  "model": "dinov2",
+  "cards_evaluated": 60,
+  "total_questions": 300,
+  "top1_accuracy_percent": 100.0,
+  "top2_accuracy_percent": 100.0,
+  "avg_latency_ms": 67.6,
+  "p95_latency_ms": 73.26,
+  "per_blur_accuracy": {
+    "blur_light": 100.0,
+    "blur_medium": 100.0,
+    "blur_heavy": 100.0,
+    "blur_box": 100.0,
+    "blur_compound": 100.0
+  },
+  "meets_accuracy_goal": true,
+  "meets_latency_goal": true
+}

@@ -1,0 +1,33 @@
+# Anime Card Assistant - Configuration
+application:
+  name: "Anime Card Assistant"
+  version: "1.0.0"
+
+recognition:
+  model_name: "dinov2"         # Options: "dinov2", "mobilenet"
+  embedding_dimension: 384
+  high_confidence_threshold: 0.70
+  medium_confidence_threshold: 0.55
+  minimum_margin: 0.04
+  top_k_fallback: 4
+
+capture:
+  target_fps: 8.0
+  auto_detect_quiz: true
+  min_change_delta: 8.0
+  hash_similarity_threshold: 4
+
+ui:
+  default_opacity: 0.94
+  window_width: 360
+  always_on_top: true
+  accent_color: "#38bdf8"
+
+paths:
+  cards_json: "data/cards.json"
+  cards_db: "data/cards.db"
+  embeddings_npz: "models/embeddings/card_embeddings.npz"
+  calibration_json: "data/calibration.json"
+  memory_db: "data/card_memory.db"
+  learned_blurs_dir: "data/learned_blurs"
+

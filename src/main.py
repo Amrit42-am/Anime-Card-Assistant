@@ -1,0 +1,122 @@
+"""
+src/main.py
+
+Phase 9: Main Application Entry Point.
+Initializes configuration, verifies dependencies and screen permissions,
+and starts the Anime Card Assistant desktop application with PySide6.
+"""
+
+import argparse
+import logging
+import os
+import signal
+import sys
+import time
+from pathlib import Path
+
+# Add project root to sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] %(levelname)s [%(name)s]: %(message)s",
+    datefmt="%H:%M:%S"
+)
+logger = logging.getLogger("main")
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Anime Card Assistant — Roblox Card Clash Recognition System")
+    parser.add_argument("--calibrate", action="store_true", help="Launch calibration dialog directly.")
+    parser.add_argument("--headless", action="store_true", help="Run monitoring loop in terminal without GUI.")
+    parser.add_argument("--model", type=str, default="dinov2", choices=["dinov2", "mobilenet"], help="Visual encoder model.")
+    parser.add_argument("--fps", type=float, default=8.0, help="Target screen monitoring FPS.")
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+
+    # Preflight check for card dataset and embeddings
+    cards_json = Path("data/cards.json")
+    embeddings_npz = Path("models/embeddings/card_embeddings.npz")
+
+    if not cards_json.exists():
+        logger.error("Dataset not found at %s. Please run: python scripts/collect_cards.py", cards_json)
+        sys.exit(1)
+
+    if not embeddings_npz.exists():
+        logger.error("Embeddings not found at %s. Please run: python scripts/build_embeddings.py", embeddings_npz)
+        sys.exit(1)
+
+    # Lazy import heavy Qt & Pipeline modules after argument parsing
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+    from src.capture.screen_capture import ScreenCapture
+    from src.capture.calibration import CalibrationDialog
+    from src.core.pipeline import QuizPipeline
+    from src.ui.overlay import FloatingOverlay
+
+    # Check Screen Recording permissions on macOS
+    has_perm = ScreenCapture.check_permissions()
+    if not has_perm:
+        logger.warning("Screen Recording permission might not be granted. Requesting access...")
+        ScreenCapture.request_permissions()
+
+    # Headless mode
+    if args.headless:
+        logger.info("Starting headless monitoring pipeline (Ctrl+C to quit)...")
+        pipeline = QuizPipeline(encoder_name=args.model)
+        try:
+            while True:
+                res = pipeline.step()
+                if res and res.status == "matched":
+                    print(f"\n>>> RECOGNIZED CARD: {res.card_name} ({res.confidence*100:.1f}%) in {res.processing_time_ms} ms")
+                time.sleep(1.0 / args.fps)
+        except KeyboardInterrupt:
+            logger.info("Headless pipeline stopped.")
+            sys.exit(0)
+
+    # GUI Application
+    QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    app = QApplication(sys.argv)
+    app.setApplicationName("Anime Card Assistant")
+    app.setOrganizationName("AnimeCardClash")
+
+    # Calibration-only mode
+    if args.calibrate:
+        logger.info("Launching screen calibration...")
+        capture = ScreenCapture()
+        dlg = CalibrationDialog(capture)
+        dlg.exec()
+        sys.exit(0)
+
+    # Initialize full pipeline
+    pipeline = QuizPipeline(encoder_name=args.model)
+
+    # Launch floating assistant overlay
+    overlay = FloatingOverlay(pipeline=pipeline)
+    overlay.show()
+    overlay.raise_()
+    overlay.activateWindow()
+
+    # Bring to foreground on macOS
+    try:
+        from AppKit import NSApplication, NSApplicationActivationPolicyRegular
+        ns_app = NSApplication.sharedApplication()
+        ns_app.setActivationPolicy_(NSApplicationActivationPolicyRegular)
+        ns_app.activateIgnoringOtherApps_(True)
+    except Exception as e:
+        logger.debug("AppKit activation notice: %s", e)
+
+    # Allow clean Ctrl+C in terminal to exit Qt app
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+    logger.info("Anime Card Assistant is active and monitoring!")
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()
