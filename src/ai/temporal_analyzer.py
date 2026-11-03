@@ -3,14 +3,15 @@ src/ai/temporal_analyzer.py
 
 Multi-frame temporal tracking and confidence stabilization for Anime Card Assistant.
 Mitigates single-frame noise, resolves momentary OCR errors via temporal voting,
-monitors timer depletion rates, and detects state transitions.
+monitors timer depletion rates using actual elapsed timestamps, and isolates predictions
+by question session ID.
 """
 
 from collections import deque
 from dataclasses import dataclass
 import logging
 import time
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 
 from src.ai.candidate_reasoner import ReasonedAnswer
 
@@ -19,6 +20,7 @@ logger = logging.getLogger("temporal_analyzer")
 
 @dataclass
 class TemporalSnapshot:
+    session_id: str
     answer: ReasonedAnswer
     timestamp: float
     timer_value: Optional[float]
@@ -29,49 +31,82 @@ class TemporalAnalyzer:
     """
     Maintains a rolling buffer of consecutive frame inferences to stabilize
     predictions, damp jitter, and detect question/result transitions.
+    Isolates snapshots per question session to avoid cross-question contamination.
     """
 
     def __init__(self, window_size: int = 5, min_agreement_ratio: float = 0.5):
         self.window_size = window_size
         self.min_agreement_ratio = min_agreement_ratio
         self.history: deque[TemporalSnapshot] = deque(maxlen=window_size)
+        self.current_session_id: Optional[str] = None
         self.last_timer: Optional[float] = None
-        self.timer_trend: float = 0.0  # rate of change
+        self.last_timer_time: Optional[float] = None
+        self.timer_trend: float = 0.0  # units of timer change per second
+
+    def set_session(self, session_id: str):
+        """Switches active session and clears history if new question begins."""
+        if self.current_session_id != session_id:
+            logger.debug("TemporalAnalyzer switching from session %s to %s",
+                         self.current_session_id, session_id)
+            self.clear()
+            self.current_session_id = session_id
 
     def push(
         self,
         answer: Optional[ReasonedAnswer],
+        session_id: Optional[str] = None,
         timer_val: Optional[float] = None,
         is_result: bool = False,
         timestamp: Optional[float] = None
     ):
         """Records a new inference snapshot into the temporal window."""
         now = timestamp or time.time()
-        if timer_val is not None and self.last_timer is not None:
-            dt = 0.1  # typical frame interval
-            self.timer_trend = (timer_val - self.last_timer) / dt
-        self.last_timer = timer_val
+
+        if session_id and session_id != self.current_session_id:
+            self.set_session(session_id)
+
+        # Calculate timer trend using actual timestamp delta
+        if timer_val is not None:
+            if self.last_timer is not None and self.last_timer_time is not None:
+                dt = max(0.001, now - self.last_timer_time)
+                self.timer_trend = (timer_val - self.last_timer) / dt
+            self.last_timer = timer_val
+            self.last_timer_time = now
 
         if answer is not None:
+            sid = session_id or self.current_session_id or "default"
             self.history.append(TemporalSnapshot(
+                session_id=sid,
                 answer=answer,
                 timestamp=now,
                 timer_value=timer_val,
                 is_result_frame=is_result
             ))
 
-    def get_stabilized_answer(self) -> Optional[ReasonedAnswer]:
+    def get_stabilized_answer(
+        self,
+        session_id: Optional[str] = None,
+        return_agreement: bool = False
+    ) -> Any:
         """
         Computes the temporally stabilized answer across the rolling window.
-        Uses confidence-weighted voting.
+        Returns stabilized_answer (or (stabilized_answer, agreement_ratio) if return_agreement=True).
+        Filters snapshots to ensure only answers from the requested session are counted.
         """
         if not self.history:
-            return None
+            return (None, 0.0) if return_agreement else None
 
-        # Filter out result frames when seeking active answer
-        active_snaps = [s for s in self.history if not s.is_result_frame]
+        target_sid = session_id or self.current_session_id
+
+        # Filter out result frames and cross-session frames
+        active_snaps = [
+            s for s in self.history
+            if not s.is_result_frame and (target_sid is None or s.session_id == target_sid)
+        ]
+
         if not active_snaps:
-            return self.history[-1].answer
+            latest = self.history[-1].answer
+            return (latest, 1.0) if return_agreement else latest
 
         # Accumulate weights per card name
         votes: Dict[str, float] = {}
@@ -84,7 +119,6 @@ class TemporalAnalyzer:
             votes[name] = votes.get(name, 0.0) + weight
             candidate_map[name] = ans
 
-        # Find candidate with highest accumulated weight
         top_name = max(votes, key=votes.get)
         top_weight = votes[top_name]
         total_weight = sum(votes.values())
@@ -92,18 +126,15 @@ class TemporalAnalyzer:
         agreement_ratio = top_weight / total_weight if total_weight > 0 else 0.0
         best_answer = candidate_map[top_name]
 
-        if agreement_ratio >= self.min_agreement_ratio:
-            return best_answer
-
-        # If voting is fragmented, return the latest answer with lower confidence flag
-        latest = active_snaps[-1].answer
-        return latest
+        if return_agreement:
+            return best_answer, round(agreement_ratio, 4)
+        return best_answer
 
     def is_transition_detected(self) -> bool:
         """
-        Detects sudden jump in timer or blanking indicating a new question.
+        Detects sudden upward jump in timer indicating a new question round has begun.
         """
-        if self.timer_trend > 2.0:  # Timer jumped up (e.g. from 1.0s to 10.0s)
+        if self.timer_trend > 2.0:  # Timer jumped up (e.g. from 0.5s to 10.0s)
             return True
         return False
 
@@ -111,4 +142,5 @@ class TemporalAnalyzer:
         """Clears temporal buffer for a new question round."""
         self.history.clear()
         self.last_timer = None
+        self.last_timer_time = None
         self.timer_trend = 0.0

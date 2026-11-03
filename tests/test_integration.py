@@ -177,3 +177,51 @@ def test_pipeline_step_lifecycle(pipeline):
     pipeline.capture.capture_quiz_bundle = orig_capture
     if report3.sample_id:
         pipeline.memory.invalidate_sample(report3.sample_id)
+
+
+def test_pipeline_advanced_ai_modules_wired(pipeline, monkeypatch):
+    """
+    Verifies that all Advanced Autonomous AI modules are instantiated,
+    properly wired, and actively invoked during pipeline processing.
+    """
+    # 1. Check all modules exist on the pipeline
+    assert hasattr(pipeline, "perception_engine")
+    assert hasattr(pipeline, "candidate_reasoner")
+    assert hasattr(pipeline, "temporal_analyzer")
+    assert hasattr(pipeline, "context_analyzer")
+    assert hasattr(pipeline, "adaptive_learning")
+    assert hasattr(pipeline, "game_locator")
+    assert hasattr(pipeline, "confidence_engine")
+    assert hasattr(pipeline, "model_manager")
+
+    # 2. Track calls to candidate_reasoner and temporal_analyzer
+    called_tracker = {"reasoner": 0, "temporal": 0}
+
+    orig_reason = pipeline.candidate_reasoner.reason_answer
+    def spy_reason(*args, **kwargs):
+        called_tracker["reasoner"] += 1
+        return orig_reason(*args, **kwargs)
+
+    orig_push = pipeline.temporal_analyzer.push
+    def spy_push(*args, **kwargs):
+        called_tracker["temporal"] += 1
+        return orig_push(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline.candidate_reasoner, "reason_answer", spy_reason)
+    monkeypatch.setattr(pipeline.temporal_analyzer, "push", spy_push)
+
+    # Trigger a question step
+    options = ["Green Bomber", "Harmonious Soul", "Shadow Duelist", "Soul King"]
+    bundle = create_mock_quiz_frame("Green Bomber", options)
+    orig_capture = pipeline.capture.capture_quiz_bundle
+    pipeline.capture.capture_quiz_bundle = lambda *args, **kwargs: bundle
+    pipeline.detector.reset()
+
+    try:
+        answer, _ = pipeline.step()
+        assert answer is not None
+        assert called_tracker["reasoner"] >= 1
+        assert called_tracker["temporal"] >= 1
+    finally:
+        pipeline.capture.capture_quiz_bundle = orig_capture
+

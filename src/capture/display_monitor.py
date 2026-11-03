@@ -175,3 +175,4 @@ class DisplayMonitor:
 
     def close(self):
         self._sct.close()
+

@@ -1,15 +1,15 @@
 """
 src/ai/confidence_engine.py
 
-Calibrated confidence estimation and decision boundary verification.
-Translates raw cosine similarities into probabilistic confidence scores
-using temperature scaling, runner-up margin analysis, and candidate constraints.
+Evidence-based calibrated confidence estimation and decision boundary verification.
+Translates visual similarity, victory margin, OCR quality, candidate completeness,
+and temporal agreement into calibrated confidence scores with explainable verdicts.
 """
 
 from dataclasses import dataclass
 import logging
 import math
-from typing import Optional, Tuple
+from typing import Optional, List
 
 logger = logging.getLogger("confidence_engine")
 
@@ -23,12 +23,13 @@ class ConfidenceVerdict:
     top_score: float
     runner_up_score: float
     candidate_constrained: bool
+    confidence_level: str  # "HIGH", "MEDIUM", "LOW", "UNCERTAIN"
 
 
 class ConfidenceEngine:
     """
     Evaluates visual match confidence by measuring similarity magnitude,
-    runner-up margin of victory, and candidate search constraint.
+    runner-up margin of victory, candidate completeness, and temporal stability.
     """
 
     def __init__(
@@ -36,55 +37,86 @@ class ConfidenceEngine:
         min_top_similarity: float = 0.62,
         min_margin: float = 0.04,
         confident_threshold: float = 0.70,
-        temperature: float = 0.08
+        temperature: float = 0.08,
+        fallback_min_top_similarity: float = 0.78,
+        fallback_min_margin: float = 0.08
     ):
         self.min_top_similarity = min_top_similarity
         self.min_margin = min_margin
         self.confident_threshold = confident_threshold
         self.temperature = temperature
+        self.fallback_min_top_similarity = fallback_min_top_similarity
+        self.fallback_min_margin = fallback_min_margin
 
     def evaluate(
         self,
         top_score: float,
         runner_up_score: float,
         candidate_constrained: bool = True,
-        source: str = "visual"
+        source: str = "visual",
+        ocr_quality: float = 1.0,
+        candidate_count: int = 4,
+        temporal_agreement: float = 1.0
     ) -> ConfidenceVerdict:
         """
         Calculates calibrated confidence and determines if the prediction is trustworthy.
+        Uses evidence-based multi-factor temperature scaling without arbitrary hardcoded bonuses.
         """
         top_score = max(0.0, min(1.0, float(top_score)))
         runner_up_score = max(0.0, min(1.0, float(runner_up_score)))
         margin = max(0.0, top_score - runner_up_score)
 
-        # Baseline sigmoid temperature calibration over margin and top similarity
-        # Shift anchor based on candidate constraint
-        anchor_sim = 0.60 if candidate_constrained else 0.72
-        norm_diff = (top_score - anchor_sim) + (margin * 1.8)
+        # Determine threshold requirements based on constraint level
+        if candidate_constrained:
+            req_top_sim = self.min_top_similarity
+            req_margin = self.min_margin
+            anchor_sim = 0.60
+        else:
+            req_top_sim = self.fallback_min_top_similarity
+            req_margin = self.fallback_min_margin
+            anchor_sim = 0.75
 
-        # Sigmoid scaling
+        # Incorporate evidence: OCR fidelity and candidate completeness factor
+        completeness_factor = min(1.0, candidate_count / 4.0) if candidate_constrained else 0.85
+        evidence_weight = (0.7 * top_score) + (0.3 * (ocr_quality * completeness_factor))
+
+        norm_diff = (evidence_weight - anchor_sim) + (margin * 2.0)
         calibrated = 1.0 / (1.0 + math.exp(-norm_diff / self.temperature))
         calibrated = round(float(calibrated), 4)
 
-        # Verification rules:
-        # 1. Top score must meet minimum similarity
-        # 2. Margin must meet minimum threshold unless top score is overwhelmingly high (>0.92)
-        # 3. If source is confirmed learned blur memory, confidence receives positive prior
-        if "learned" in source.lower():
-            calibrated = min(1.0, calibrated + 0.08)
+        reasons: List[str] = []
+        is_confident = True
 
-        is_confident = False
-        reasons = []
+        if top_score < req_top_sim:
+            is_confident = False
+            reasons.append(f"Top similarity ({top_score:.3f}) < required ({req_top_sim:.3f})")
 
-        if top_score < self.min_top_similarity:
-            reasons.append(f"Top similarity ({top_score:.3f}) < min threshold ({self.min_top_similarity:.3f})")
-        elif margin < self.min_margin and top_score < 0.90:
-            reasons.append(f"Margin of victory ({margin:.3f}) < min margin ({self.min_margin:.3f})")
-        elif calibrated < self.confident_threshold:
-            reasons.append(f"Calibrated score ({calibrated:.2f}) < threshold ({self.confident_threshold:.2f})")
-        else:
-            is_confident = True
+        if margin < req_margin and top_score < 0.92:
+            is_confident = False
+            reasons.append(f"Margin of victory ({margin:.3f}) < required ({req_margin:.3f})")
+
+        if calibrated < self.confident_threshold:
+            is_confident = False
+            reasons.append(f"Calibrated confidence ({calibrated:.2f}) < threshold ({self.confident_threshold:.2f})")
+
+        if candidate_constrained and candidate_count < 4:
+            is_confident = False
+            reasons.append(f"Incomplete candidate set ({candidate_count}/4 resolved)")
+
+        if temporal_agreement < 0.5:
+            is_confident = False
+            reasons.append(f"Temporal agreement ({temporal_agreement:.2f}) < 0.50")
+
+        if is_confident:
+            if calibrated >= 0.85:
+                level = "HIGH"
+            elif calibrated >= 0.70:
+                level = "MEDIUM"
+            else:
+                level = "LOW"
             reasons.append(f"Confident match (sim={top_score:.3f}, margin={margin:.3f}, conf={calibrated:.2f})")
+        else:
+            level = "UNCERTAIN"
 
         explanation = "; ".join(reasons)
 
@@ -95,5 +127,6 @@ class ConfidenceEngine:
             explanation=explanation,
             top_score=round(top_score, 4),
             runner_up_score=round(runner_up_score, 4),
-            candidate_constrained=candidate_constrained
+            candidate_constrained=candidate_constrained,
+            confidence_level=level
         )

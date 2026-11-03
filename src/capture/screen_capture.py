@@ -13,15 +13,21 @@ import mss
 import numpy as np
 
 from src.capture.region_manager import CalibrationConfig, RectRegion
+from src.capture.game_locator import GameLocator, ResolvedGameRegions
 
 logger = logging.getLogger("screen_capture")
 
 
 class ScreenCapture:
-    """Manages high-rate screen monitoring and region cropping."""
+    """Manages high-rate screen monitoring, dynamic window tracking, and region cropping."""
 
-    def __init__(self, calibration: Optional[CalibrationConfig] = None):
+    def __init__(
+        self,
+        calibration: Optional[CalibrationConfig] = None,
+        game_locator: Optional[GameLocator] = None
+    ):
         self.calibration = calibration or CalibrationConfig.load()
+        self.game_locator = game_locator or GameLocator(calibration=self.calibration)
         self._sct = mss.MSS()
         self.monitors = self._sct.monitors
         logger.info("Initialized ScreenCapture with %d monitors detected.", len(self.monitors))
@@ -33,13 +39,10 @@ class ScreenCapture:
             import Quartz
             if Quartz.CGPreflightScreenCaptureAccess():
                 return True
-            # Try a quick test grab with MSS as definitive fallback
-            with mss.MSS() as s:
-                img = s.grab({"top": 0, "left": 0, "width": 10, "height": 10})
-                return img is not None and len(img.raw) > 0
+            return False
         except Exception as e:
             logger.warning("Permission preflight check returned error: %s", e)
-            return True
+            return False
 
     @staticmethod
     def request_permissions():
@@ -51,7 +54,7 @@ class ScreenCapture:
             logger.warning("Failed to invoke CGRequestScreenCaptureAccess: %s", e)
 
     def capture_full_screen(self, monitor_idx: int = 1) -> np.ndarray:
-        """Capture entire screen as BGR numpy array."""
+        """Capture entire screen as BGR numpy array without writing to disk."""
         mon = self.monitors[monitor_idx] if monitor_idx < len(self.monitors) else self.monitors[0]
         raw = self._sct.grab(mon)
         bgra = np.array(raw)
@@ -59,17 +62,19 @@ class ScreenCapture:
 
     def capture_rect(self, rect: RectRegion) -> np.ndarray:
         """
-        Capture a specific bounding box.
-        Coordinates are automatically bounded within display limits.
+        Capture a specific bounding box across all monitors.
+        Coordinates support multi-display desktop virtual spaces and negative coordinates.
         """
-        primary = self.monitors[1] if len(self.monitors) > 1 else self.monitors[0]
-        max_w = primary["width"]
-        max_h = primary["height"]
+        all_mon = self.monitors[0]
+        min_x = all_mon["left"]
+        min_y = all_mon["top"]
+        max_x = min_x + all_mon["width"]
+        max_y = min_y + all_mon["height"]
 
-        left = max(0, min(rect.x, max_w - 10))
-        top = max(0, min(rect.y, max_h - 10))
-        width = max(10, min(rect.w, max_w - left))
-        height = max(10, min(rect.h, max_h - top))
+        left = max(min_x, min(rect.x, max_x - 10))
+        top = max(min_y, min(rect.y, max_y - 10))
+        width = max(10, min(rect.w, max_x - left))
+        height = max(10, min(rect.h, max_y - top))
 
         bbox = {"left": left, "top": top, "width": width, "height": height}
         raw = self._sct.grab(bbox)
@@ -81,11 +86,18 @@ class ScreenCapture:
         calibration: Optional[CalibrationConfig] = None
     ) -> Dict[str, Any]:
         """
-        Captures the entire game window and slices out card, options, and button frames.
-        Returns a dictionary containing cropped BGR frames and metadata.
+        Captures the live game window using automatic Roblox window tracking
+        and slices out card, options, and button frames.
+        Falls back to manual calibration if Roblox is not detected.
         """
-        cfg = calibration or self.calibration
-        game_rect = cfg.game_window
+        if calibration is not None:
+            self.game_locator.calibration = calibration
+            cfg = calibration
+        else:
+            cfg = self.calibration
+
+        resolved = self.game_locator.locate_game()
+        game_rect = resolved.game_rect
         game_frame = self.capture_rect(game_rect)
 
         # Slice card artwork and options from game_frame using relative coordinates
@@ -153,6 +165,9 @@ class ScreenCapture:
             "timer_frame": timer_frame,
             "banner_frame": banner_frame,
             "game_rect": game_rect,
+            "is_auto_tracked": getattr(resolved, "is_auto_tracked", False),
+            "source_window_title": getattr(resolved, "source_window_title", ""),
+            "resolved_regions": resolved,
         }
 
     def close(self):

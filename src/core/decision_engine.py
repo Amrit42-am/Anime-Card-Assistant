@@ -1,21 +1,24 @@
 """
 src/core/decision_engine.py
 
-Phase 7: Central Answer Decision Engine.
-Coordinates OCR candidate extraction, visual embedding matching,
-learned blur memory prioritization, margin scoring, and confidence calibration.
+Phase 7: Decision Engine & Answer Reasoner.
+Fuses candidate OCR evidence, visual embeddings from DINOv2, and verified
+learned blur memory to identify cards within the active quiz window.
 """
 
 from dataclasses import dataclass, asdict
 import logging
 import time
 from typing import List, Dict, Any, Optional
+
 import numpy as np
 
 from src.ocr.option_reader import OptionReader, CandidateOption
 from src.recognition.image_encoder import BaseImageEncoder
 from src.recognition.image_matcher import ImageMatcher
 from src.memory.blur_memory import BlurMemorySystem
+from src.ai.candidate_reasoner import CandidateReasoner, ReasonedAnswer
+from src.ai.confidence_engine import ConfidenceEngine
 
 logger = logging.getLogger("decision_engine")
 
@@ -48,32 +51,41 @@ class AnswerResult:
 
 
 class AnswerDecisionEngine:
-    """Combines OCR evidence, visual embeddings, and learned blur memory to resolve quiz questions."""
+    """Combines OCR evidence, visual embeddings, and candidate reasoning to resolve quiz questions."""
 
     def __init__(
         self,
         matcher: ImageMatcher,
         encoder: BaseImageEncoder,
         option_reader: OptionReader,
-        memory: Optional[BlurMemorySystem] = None
+        memory: Optional[BlurMemorySystem] = None,
+        confidence_engine: Optional[ConfidenceEngine] = None,
+        candidate_reasoner: Optional[CandidateReasoner] = None
     ):
         self.matcher = matcher
         self.encoder = encoder
         self.option_reader = option_reader
         self.memory = memory
+        self.confidence_engine = confidence_engine or ConfidenceEngine()
+        self.reasoner = candidate_reasoner or CandidateReasoner(
+            image_matcher=self.matcher,
+            image_encoder=self.encoder,
+            option_reader=self.option_reader,
+            confidence_engine=self.confidence_engine
+        )
 
     def process_question(
         self,
         card_frame: np.ndarray,
         button_frames: Optional[List[np.ndarray]] = None,
-        options_frame: Optional[np.ndarray] = None
+        options_frame: Optional[np.ndarray] = None,
+        temporal_agreement: float = 1.0
     ) -> AnswerResult:
         """
         Main decision workflow:
-        1. Read 4 options from button or options frame.
-        2. Encode the blurred card frame into a unit embedding.
-        3. Match against candidates and learned memory.
-        4. Validate margin and score confidence.
+        1. Read options from button frames or options panel.
+        2. Execute CandidateReasoner for candidate-constrained matching and slot assignment.
+        3. Convert to AnswerResult.
         """
         t0 = time.time()
 
@@ -93,100 +105,40 @@ class AnswerDecisionEngine:
                 processing_time_ms=0.0
             )
 
-        # 1. OCR Extraction (Prefer 4 distinct and correctly resolved option IDs)
+        # 1. OCR Extraction
         ocr_candidates: List[CandidateOption] = []
         if button_frames and len(button_frames) == 4:
             ocr_candidates = self.option_reader.read_options_from_buttons(button_frames, use_retry=False)
-
-            # Check distinct resolved cards
-            distinct_cids = {c.card_id for c in ocr_candidates if c.is_valid and c.card_id is not None}
-            if len(distinct_cids) < 4:
-                logger.info("Only %d/4 distinct candidates resolved. Retrying preprocessing and OCR...", len(distinct_cids))
-                # Step 1 & 2: Retry preprocessing & OCR on button crops
-                retry_candidates = self.option_reader.read_options_from_buttons(button_frames, use_retry=True)
-                for i in range(4):
-                    if not ocr_candidates[i].is_valid and retry_candidates[i].is_valid:
-                        logger.info("OCR Retry successfully recovered slot %d: '%s'", i, retry_candidates[i].canonical_name)
-                        ocr_candidates[i] = retry_candidates[i]
-
         elif options_frame is not None and options_frame.size > 0:
             ocr_candidates = self.option_reader.read_options_from_panel(options_frame)
 
-        # Unique valid candidates preserving order
-        seen_ids = set()
-        valid_candidates: List[str] = []
-        for c in ocr_candidates:
-            if c.is_valid and c.card_id is not None and c.card_id not in seen_ids:
-                seen_ids.add(c.card_id)
-                valid_candidates.append(c.canonical_name)
-
-        logger.info("OCR extracted %d distinct valid candidate cards: %s", len(valid_candidates), valid_candidates)
-
-        # 2. Visual Embedding Extraction
-        query_embedding = self.encoder.encode_image(card_frame)
-
-        # 3. Candidate Matching with Controlled Fallback
-        if len(valid_candidates) >= 4:
-            # Ideal: 4 distinct candidate options
-            match_res = self.matcher.match_candidates(
-                query_embedding=query_embedding,
-                candidate_names=valid_candidates,
-                learned_memory=self.memory
-            )
-        elif len(valid_candidates) == 3:
-            # 3 options resolved: match among the 3 candidates with controlled validation
-            match_res = self.matcher.match_candidates(
-                query_embedding=query_embedding,
-                candidate_names=valid_candidates,
-                learned_memory=self.memory
-            )
-            # Slight confidence penalty for 1 missing candidate
-            match_res["confidence"] = round(match_res["confidence"] * 0.92, 4)
-        else:
-            # Insufficient candidates (<3): controlled fallback matching across all cards
-            logger.warning("Fewer than 3 candidates from OCR (%d found). Running controlled full database search fallback.", len(valid_candidates))
-            match_res = self.matcher.match_all(
-                query_embedding=query_embedding,
-                top_k=4,
-                learned_memory=self.memory
-            )
-            # Return uncertainty when evidence is insufficient
-            if match_res["confidence"] < 0.85 or match_res["margin"] < 0.12:
-                match_res["status"] = "uncertain"
-
-        elapsed_ms = (time.time() - t0) * 1000.0
-        conf_report = match_res.get("confidence_report")
-
-        # Determine button slot (0: TL, 1: TR, 2: BL, 3: BR)
-        assigned_slot = None
-        target_name = match_res["card_name"].lower().strip()
-        for cand in ocr_candidates:
-            if cand.canonical_name and cand.canonical_name.lower().strip() == target_name:
-                assigned_slot = cand.slot_index
-                break
-
-        # Extract runner-up name and score
-        alts = match_res.get("alternatives", [])
-        runner_up_name = alts[0]["card_name"] if alts else None
-        runner_up_score = alts[0].get("similarity") if alts else None
-
-        return AnswerResult(
-            status=match_res.get("status", "uncertain"),
-            card_name=match_res["card_name"],
-            card_id=match_res["card_id"],
-            confidence=match_res["confidence"],
-            confidence_level=conf_report.confidence_level if conf_report else "MEDIUM",
-            matched_from=match_res["matched_from"],
-            raw_score=match_res["raw_score"],
-            margin=match_res["margin"],
-            candidates=[c.canonical_name for c in ocr_candidates],
-            alternatives=match_res.get("alternatives", []),
-            explanation=conf_report.explanation if conf_report else "",
-            processing_time_ms=round(elapsed_ms, 2),
-            button_slot=assigned_slot,
-            runner_up_name=runner_up_name,
-            runner_up_score=runner_up_score,
-            captured_image=card_frame.copy(),
-            query_embedding=query_embedding.copy()
+        # 2. Candidate Reasoner matching
+        reasoned: ReasonedAnswer = self.reasoner.reason_answer(
+            card_frame=card_frame,
+            ocr_candidates=ocr_candidates,
+            learned_memory=self.memory,
+            button_frames=button_frames,
+            temporal_agreement=temporal_agreement
         )
 
+        elapsed_ms = (time.time() - t0) * 1000.0
+
+        return AnswerResult(
+            status=reasoned.status,
+            card_name=reasoned.card_name,
+            card_id=reasoned.card_id,
+            confidence=reasoned.confidence,
+            confidence_level=reasoned.confidence_level,
+            matched_from=reasoned.source,
+            raw_score=reasoned.raw_match.get("raw_score", reasoned.confidence),
+            margin=reasoned.margin,
+            candidates=[c.canonical_name for c in ocr_candidates if c.canonical_name],
+            alternatives=reasoned.raw_match.get("alternatives", []),
+            explanation=reasoned.raw_match.get("explanation", ""),
+            processing_time_ms=round(elapsed_ms, 2),
+            button_slot=reasoned.slot_index,
+            runner_up_name=reasoned.runner_up_name,
+            runner_up_score=reasoned.runner_up_score,
+            captured_image=card_frame.copy(),
+            query_embedding=reasoned.query_embedding
+        )

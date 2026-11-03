@@ -82,19 +82,51 @@ class DINOv2Encoder(BaseImageEncoder):
     DINOv2 (Vision Transformer) encoder.
     Highly robust to heavy blur, color shifts, and downsampling.
     Feature dimension: 384 (vit_small).
+    Loads weights strictly from local safetensors checkpoints when available.
     """
 
-    def __init__(self, model_name: str = "vit_small_patch14_dinov2.lvd142m", device: str = None):
+    DEFAULT_LOCAL_WEIGHTS = Path("models/dinov2/vit_small_patch14_dinov2.safetensors")
+
+    def __init__(
+        self,
+        model_name: str = "vit_small_patch14_dinov2.lvd142m",
+        device: str = None,
+        weights_path: Optional[Path] = None,
+        require_offline: bool = False
+    ):
         super().__init__(device=device)
         import timm
 
-        logger.info("Loading DINOv2 model '%s'...", model_name)
-        self.model = timm.create_model(
-            model_name,
-            pretrained=True,
-            num_classes=0,
-            dynamic_img_size=True
-        ).to(self.device)
+        target_weights = Path(weights_path) if weights_path else self.DEFAULT_LOCAL_WEIGHTS
+        self.weights_path = target_weights
+
+        if target_weights.exists():
+            logger.info("Loading DINOv2 architecture '%s' and local weights from %s...", model_name, target_weights)
+            self.model = timm.create_model(
+                model_name,
+                pretrained=False,
+                num_classes=0,
+                dynamic_img_size=True
+            ).to(self.device)
+
+            from safetensors.torch import load_file
+            state_dict = load_file(str(target_weights))
+            self.model.load_state_dict(state_dict)
+            logger.info("Successfully loaded offline DINOv2 weights from local safetensors checkpoint.")
+        else:
+            if require_offline or os.environ.get("REQUIRE_OFFLINE", "0") == "1":
+                raise FileNotFoundError(
+                    f"Offline execution requirement failed: local model checkpoint not found at {target_weights}. "
+                    "Please run: python scripts/download_models.py"
+                )
+            logger.warning("Local checkpoint %s not found. Loading via timm cache...", target_weights)
+            self.model = timm.create_model(
+                model_name,
+                pretrained=True,
+                num_classes=0,
+                dynamic_img_size=True
+            ).to(self.device)
+
         self.model.eval()
 
         self.transform = T.Compose([

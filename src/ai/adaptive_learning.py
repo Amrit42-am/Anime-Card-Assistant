@@ -76,6 +76,10 @@ class AdaptiveLearning:
             timestamp=timestamp
         )
 
+    def expire_pending_question(self, reason: str = "new_question_started"):
+        """Safely expires any pending active question."""
+        self.collector.expire_pending_question(reason)
+
     def process_result_frame(
         self,
         clear_frame: np.ndarray,
@@ -117,3 +121,4 @@ class AdaptiveLearning:
             message=report.message,
             ground_truth_source=report.green_button_name
         )
+

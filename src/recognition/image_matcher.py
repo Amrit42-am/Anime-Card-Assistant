@@ -7,6 +7,7 @@ cosine similarity computation across clean and synthetic blur embeddings,
 and integration with learned blur memory.
 """
 
+from dataclasses import dataclass
 import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -17,6 +18,66 @@ from rapidfuzz import process, fuzz
 from src.recognition.confidence import ConfidenceCalibrator, ConfidenceReport
 
 logger = logging.getLogger("image_matcher")
+
+
+@dataclass
+class MatchResult:
+    card_name: str
+    card_id: int
+    raw_score: float
+    confidence: float
+    margin: float
+    matched_from: str
+    alternatives: List[Dict[str, Any]]
+    status: str
+    confidence_report: Optional[Any] = None
+
+    @property
+    def similarity(self) -> float:
+        return self.raw_score
+
+    @property
+    def source(self) -> str:
+        return self.matched_from
+
+    @property
+    def all_candidate_matches(self) -> List[Dict[str, Any]]:
+        return self.alternatives
+
+    @property
+    def top_matches(self) -> List[Dict[str, Any]]:
+        return self.alternatives
+
+    def __getitem__(self, item: str) -> Any:
+        if item in ("similarity", "score"):
+            return self.raw_score
+        if item == "source":
+            return self.matched_from
+        if item in ("all_candidate_matches", "top_matches"):
+            return self.alternatives
+        return getattr(self, item)
+
+    def get(self, item: str, default: Any = None) -> Any:
+        try:
+            return self[item]
+        except (AttributeError, KeyError):
+            return default
+
+    def __contains__(self, item: str) -> bool:
+        return hasattr(self, item) or item in ("similarity", "score", "source", "all_candidate_matches", "top_matches")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "status": self.status,
+            "card_name": self.card_name,
+            "card_id": self.card_id,
+            "confidence": self.confidence,
+            "confidence_report": self.confidence_report,
+            "matched_from": self.matched_from,
+            "raw_score": self.raw_score,
+            "margin": self.margin,
+            "alternatives": self.alternatives
+        }
 
 
 class ImageMatcher:
@@ -113,17 +174,17 @@ class ImageMatcher:
                     second_score=memory_match.get("second_confidence", 0.5),
                     source="learned_memory"
                 )
-                return {
-                    "status": "matched" if report.is_confident else "uncertain",
-                    "card_name": self.card_names[idx],
-                    "card_id": int(self.card_ids[idx]),
-                    "confidence": report.calibrated_confidence,
-                    "confidence_report": report,
-                    "matched_from": "learned_memory",
-                    "raw_score": memory_match["confidence"],
-                    "margin": report.margin,
-                    "alternatives": memory_match.get("alternatives", [])
-                }
+                return MatchResult(
+                    status="matched" if report.is_confident else "uncertain",
+                    card_name=self.card_names[idx],
+                    card_id=int(self.card_ids[idx]),
+                    confidence=report.calibrated_confidence,
+                    confidence_report=report,
+                    matched_from="learned_memory",
+                    raw_score=memory_match["confidence"],
+                    margin=report.margin,
+                    alternatives=memory_match.get("alternatives", [])
+                )
 
         # Compare against candidate embeddings
         candidate_scores = []
@@ -163,17 +224,17 @@ class ImageMatcher:
             source="synthetic_blurs"
         )
 
-        return {
-            "status": "matched" if report.is_confident else "uncertain",
-            "card_name": top["card_name"],
-            "card_id": top["card_id"],
-            "confidence": report.calibrated_confidence,
-            "confidence_report": report,
-            "matched_from": "synthetic_blurs",
-            "raw_score": top["score"],
-            "margin": report.margin,
-            "alternatives": candidate_scores[1:]
-        }
+        return MatchResult(
+            status="matched" if report.is_confident else "uncertain",
+            card_name=top["card_name"],
+            card_id=top["card_id"],
+            confidence=report.calibrated_confidence,
+            confidence_report=report,
+            matched_from="synthetic_blurs",
+            raw_score=top["score"],
+            margin=report.margin,
+            alternatives=candidate_scores[1:]
+        )
 
     def match_all(
         self,
@@ -200,17 +261,17 @@ class ImageMatcher:
                     second_score=memory_match.get("second_confidence", 0.5),
                     source="learned_memory"
                 )
-                return {
-                    "status": "matched" if report.is_confident else "uncertain",
-                    "card_name": self.card_names[idx],
-                    "card_id": int(self.card_ids[idx]),
-                    "confidence": report.calibrated_confidence,
-                    "confidence_report": report,
-                    "matched_from": "learned_memory",
-                    "raw_score": memory_match["confidence"],
-                    "margin": report.margin,
-                    "alternatives": []
-                }
+                return MatchResult(
+                    status="matched" if report.is_confident else "uncertain",
+                    card_name=self.card_names[idx],
+                    card_id=int(self.card_ids[idx]),
+                    confidence=report.calibrated_confidence,
+                    confidence_report=report,
+                    matched_from="learned_memory",
+                    raw_score=memory_match["confidence"],
+                    margin=report.margin,
+                    alternatives=[]
+                )
 
         # Vectorized dot product against all composite embeddings
         comp_scores = np.dot(self.composite_embeddings, query_embedding)  # (N,)
@@ -240,14 +301,14 @@ class ImageMatcher:
             source="fallback_all_cards"
         )
 
-        return {
-            "status": "matched" if report.is_confident else "uncertain",
-            "card_name": top["card_name"],
-            "card_id": top["card_id"],
-            "confidence": report.calibrated_confidence,
-            "confidence_report": report,
-            "matched_from": "fallback_all_cards",
-            "raw_score": top["score"],
-            "margin": report.margin,
-            "alternatives": ranked[1:]
-        }
+        return MatchResult(
+            status="matched" if report.is_confident else "uncertain",
+            card_name=top["card_name"],
+            card_id=top["card_id"],
+            confidence=report.calibrated_confidence,
+            confidence_report=report,
+            matched_from="fallback_all_cards",
+            raw_score=top["score"],
+            margin=report.margin,
+            alternatives=ranked[1:]
+        )

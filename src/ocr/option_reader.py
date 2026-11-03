@@ -36,9 +36,9 @@ class CandidateOption:
     raw_text: str
     canonical_name: str
     card_id: Optional[int]
-    ocr_confidence: float
-    fuzzy_score: float
-    is_valid: bool
+    ocr_confidence: float = 0.0
+    fuzzy_score: float = 0.0
+    is_valid: bool = False
 
 
 class OptionReader:

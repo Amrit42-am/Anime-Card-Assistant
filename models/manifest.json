@@ -1,0 +1,17 @@
+{
+  "version": "1.0.0",
+  "models": {
+    "dinov2_small": {
+      "arch": "vit_small_patch14_dinov2.lvd142m",
+      "filename": "dinov2/vit_small_patch14_dinov2.safetensors",
+      "sha256": "04d27f3400d059fc0cfd7d17dd1909a75bf3ea8fb3eeb48b97cb99e57ee20081",
+      "expected_dimension": 384,
+      "size_bytes": 88169976
+    }
+  },
+  "embeddings": {
+    "filename": "embeddings/card_embeddings.npz",
+    "expected_cards": 286,
+    "dimension": 384
+  }
+}

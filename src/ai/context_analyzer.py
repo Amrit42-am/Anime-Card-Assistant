@@ -2,8 +2,9 @@
 src/ai/context_analyzer.py
 
 Quiz Lifecycle State Machine and Context Analyzer.
-Orchestrates transitions between IDLE, ACTIVE_QUESTION, RESULT_REVEALED,
-VERIFYING, and TRANSITION states, managing question sessions and timeout expiration.
+Manages explicit state transitions across:
+SEARCHING -> QUESTION_DETECTED -> ANALYZING -> ANSWER_DISPLAYED ->
+RESULT_DETECTED -> VERIFYING -> LEARNING -> TRANSITION.
 """
 
 from dataclasses import dataclass
@@ -16,10 +17,29 @@ logger = logging.getLogger("context_analyzer")
 
 
 class QuizState(Enum):
-    IDLE = auto()
-    ACTIVE_QUESTION = auto()
-    RESULT_REVEALED = auto()
+    SEARCHING = auto()
+    QUESTION_DETECTED = auto()
+    ANALYZING = auto()
+    ANSWER_DISPLAYED = auto()
+    RESULT_DETECTED = auto()
+    VERIFYING = auto()
+    LEARNING = auto()
     TRANSITION = auto()
+
+    # Backwards compatibility properties / aliases
+    @property
+    def is_active_question(self) -> bool:
+        return self in (QuizState.QUESTION_DETECTED, QuizState.ANALYZING, QuizState.ANSWER_DISPLAYED)
+
+    @property
+    def is_result_screen(self) -> bool:
+        return self in (QuizState.RESULT_DETECTED, QuizState.VERIFYING, QuizState.LEARNING)
+
+
+# Provide aliases for legacy references if any
+QuizState.IDLE = QuizState.SEARCHING
+QuizState.ACTIVE_QUESTION = QuizState.QUESTION_DETECTED
+QuizState.RESULT_REVEALED = QuizState.RESULT_DETECTED
 
 
 @dataclass
@@ -38,15 +58,17 @@ class QuestionSession:
 
 class ContextAnalyzer:
     """
-    Finite State Machine tracking question lifecycle, preventing duplicate
-    predictions and managing result verification windows.
+    Finite State Machine tracking quiz states, isolating question sessions,
+    and handling timeout expiration.
     """
 
     def __init__(self, session_timeout: float = 18.0):
         self.session_timeout = session_timeout
-        self.current_state: QuizState = QuizState.IDLE
+        self.current_state: QuizState = QuizState.SEARCHING
         self.active_session: Optional[QuestionSession] = None
         self._session_counter: int = 0
+        self._last_question_hash: Optional[str] = None
+        self._last_question_time: float = 0.0
 
     def evaluate_transition(
         self,
@@ -58,25 +80,41 @@ class ContextAnalyzer:
     ) -> QuizState:
         """
         Transitions the state machine according to screen perception signals.
+        Ensures consecutive questions with the same card get distinct session IDs.
         """
         now = timestamp or time.time()
 
-        # Check for session expiration
+        # 1. Session Expiration Check
         if self.active_session is not None:
             if now - self.active_session.start_time > self.session_timeout:
-                logger.info("Session %s timed out after %.1fs. Resetting to IDLE.",
+                logger.info("Session %s timed out after %.1fs. Returning to SEARCHING.",
                             self.active_session.session_id, now - self.active_session.start_time)
                 self.active_session = None
-                self.current_state = QuizState.IDLE
+                self.current_state = QuizState.SEARCHING
 
+        # 2. Result state transition
         if is_result_screen:
-            self.current_state = QuizState.RESULT_REVEALED
-            if self.active_session:
+            if self.active_session and not self.active_session.result_processed:
+                self.current_state = QuizState.RESULT_DETECTED
                 self.active_session.last_update = now
+            else:
+                self.current_state = QuizState.TRANSITION
 
+        # 3. Active question state transition
         elif is_active_question:
-            # Check if this is a brand new question or continuation of current
-            if self.active_session is None or (card_hash and self.active_session.card_hash != card_hash):
+            # Detect new question round:
+            # - No active session, OR
+            # - New card hash, OR
+            # - Active session already had its result processed, OR
+            # - Minimum time elapsed (> 4.0s) even if hash is identical (repeated card round)
+            is_new_question = (
+                self.active_session is None or
+                (card_hash and card_hash != self._last_question_hash) or
+                self.active_session.result_processed or
+                (now - self._last_question_time > 4.0 and self.active_session.has_predicted)
+            )
+
+            if is_new_question:
                 self._session_counter += 1
                 sid = f"q_{int(now)}_{self._session_counter}"
                 self.active_session = QuestionSession(
@@ -86,35 +124,58 @@ class ContextAnalyzer:
                     start_time=now,
                     last_update=now
                 )
-                logger.info("Started new QuestionSession: %s", sid)
+                self._last_question_hash = card_hash
+                self._last_question_time = now
+                self.current_state = QuizState.QUESTION_DETECTED
+                logger.info("ContextAnalyzer: Started new QuestionSession %s", sid)
+            else:
+                if self.active_session.has_predicted:
+                    self.current_state = QuizState.ANSWER_DISPLAYED
+                else:
+                    self.current_state = QuizState.ANALYZING
 
-            self.current_state = QuizState.ACTIVE_QUESTION
             self.active_session.last_update = now
 
+        # 4. Idle / Transition
         else:
-            if self.current_state == QuizState.RESULT_REVEALED:
+            if self.current_state in (QuizState.RESULT_DETECTED, QuizState.VERIFYING, QuizState.LEARNING, QuizState.TRANSITION):
                 self.current_state = QuizState.TRANSITION
             else:
-                self.current_state = QuizState.IDLE
+                self.current_state = QuizState.SEARCHING
 
         return self.current_state
 
-    def mark_predicted(self, card_name: str, slot_index: int):
+    def mark_analyzing(self):
+        """Marks state as actively computing visual inferences."""
+        if self.active_session:
+            self.current_state = QuizState.ANALYZING
+
+    def mark_predicted(self, card_name: str, slot_index: Optional[int]):
         """Records that prediction was emitted for the active question."""
         if self.active_session is not None:
             self.active_session.predicted_name = card_name
             self.active_session.predicted_slot = slot_index
             self.active_session.has_predicted = True
+            self.current_state = QuizState.ANSWER_DISPLAYED
+
+    def mark_verifying(self):
+        """Marks that result verification is in progress."""
+        self.current_state = QuizState.VERIFYING
+
+    def mark_learning(self):
+        """Marks that sample is being written to memory."""
+        self.current_state = QuizState.LEARNING
 
     def mark_result_completed(self):
         """Marks result processing complete so duplicate frames are skipped."""
         if self.active_session is not None:
             self.active_session.result_processed = True
+            self.current_state = QuizState.TRANSITION
 
     def should_predict(self) -> bool:
         """Determines if a prediction should be emitted for the current frame."""
         return (
-            self.current_state == QuizState.ACTIVE_QUESTION and
+            self.current_state in (QuizState.QUESTION_DETECTED, QuizState.ANALYZING) and
             self.active_session is not None and
             not self.active_session.has_predicted
         )
@@ -122,12 +183,14 @@ class ContextAnalyzer:
     def should_process_result(self) -> bool:
         """Determines if the result screen should be processed."""
         return (
-            self.current_state == QuizState.RESULT_REVEALED and
+            self.current_state in (QuizState.RESULT_DETECTED, QuizState.VERIFYING) and
             self.active_session is not None and
             not self.active_session.result_processed
         )
 
     def reset(self):
         """Resets the state machine."""
-        self.current_state = QuizState.IDLE
+        self.current_state = QuizState.SEARCHING
         self.active_session = None
+        self._last_question_hash = None
+        self._last_question_time = 0.0

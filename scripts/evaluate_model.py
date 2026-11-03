@@ -31,6 +31,9 @@ from src.recognition.image_encoder import get_image_encoder
 from src.recognition.image_matcher import ImageMatcher
 from src.memory.blur_memory import BlurMemorySystem
 from src.memory.database import MemoryDatabase
+from src.ai.model_manager import ModelManager
+from src.capture.display_monitor import DisplayMonitor
+from src.ocr.option_reader import OptionReader
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
 logger = logging.getLogger("evaluate_model")
@@ -241,17 +244,114 @@ def evaluate_unseen_cards(cards, matcher, encoder, num_held_out: int = 20):
     }
 
 
+def profile_pipeline_latencies(cards, matcher, encoder, num_trials: int = 25):
+    """
+    Measures timing breakdowns for:
+    1. Screen capture latency
+    2. OCR extraction latency
+    3. Encoder inference latency
+    4. Candidate matching latency
+    5. Total end-to-end pipeline latency (p50, p95, mean)
+    """
+    logger.info("Profiling Pipeline Latencies across %d trials...", num_trials)
+    monitor = DisplayMonitor()
+    reader = OptionReader()
+
+    capture_times = []
+    ocr_times = []
+    encoder_times = []
+    matching_times = []
+    e2e_times = []
+
+    # Prepare button images with sample text
+    sample_names = ["Green Bomber", "Harmonious Soul", "Shadow Duelist", "Soul King"]
+    btn_frames = []
+    for name in sample_names:
+        btn = np.ones((60, 140, 3), dtype=np.uint8) * 40
+        cv2.putText(btn, name, (8, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
+        btn_frames.append(btn)
+
+    test_img = np.ones((224, 224, 3), dtype=np.uint8) * 128
+    if cards and Path(cards[0]["image"]).exists():
+        loaded = cv2.imread(cards[0]["image"])
+        if loaded is not None:
+            test_img = cv2.GaussianBlur(loaded, (35, 35), 12.0)
+
+    # Warmup
+    _ = encoder.encode_image(test_img)
+    _ = reader.read_options_from_buttons(btn_frames)
+
+    for _ in range(num_trials):
+        t_start = time.perf_counter()
+
+        # 1. Screen capture latency
+        t0 = time.perf_counter()
+        try:
+            _ = monitor.capture_display()
+        except Exception:
+            pass
+        t1 = time.perf_counter()
+        capture_ms = (t1 - t0) * 1000.0
+        capture_times.append(capture_ms)
+
+        # 2. OCR extraction latency
+        t0 = time.perf_counter()
+        _ = reader.read_options_from_buttons(btn_frames)
+        t1 = time.perf_counter()
+        ocr_ms = (t1 - t0) * 1000.0
+        ocr_times.append(ocr_ms)
+
+        # 3. Encoder inference latency
+        t0 = time.perf_counter()
+        emb = encoder.encode_image(test_img)
+        t1 = time.perf_counter()
+        encoder_ms = (t1 - t0) * 1000.0
+        encoder_times.append(encoder_ms)
+
+        # 4. Candidate matching latency
+        t0 = time.perf_counter()
+        _ = matcher.match_candidates(emb, sample_names)
+        t1 = time.perf_counter()
+        matching_ms = (t1 - t0) * 1000.0
+        matching_times.append(matching_ms)
+
+        total_e2e_ms = (time.perf_counter() - t_start) * 1000.0
+        e2e_times.append(total_e2e_ms)
+
+    def stats(arr):
+        return {
+            "mean_ms": round(float(np.mean(arr)), 2),
+            "p50_ms": round(float(np.percentile(arr, 50)), 2),
+            "p95_ms": round(float(np.percentile(arr, 95)), 2),
+            "min_ms": round(float(np.min(arr)), 2),
+            "max_ms": round(float(np.max(arr)), 2)
+        }
+
+    return {
+        "num_trials": num_trials,
+        "screen_capture": stats(capture_times),
+        "ocr_extraction": stats(ocr_times),
+        "encoder_inference": stats(encoder_times),
+        "candidate_matching": stats(matching_times),
+        "total_end_to_end": stats(e2e_times)
+    }
+
+
 def run_comprehensive_evaluation(num_cards: int = 40, encoder_name: str = "dinov2"):
     with open(CARDS_JSON, "r", encoding="utf-8") as f:
         cards = json.load(f)
 
     matcher = ImageMatcher()
-    encoder = get_image_encoder(encoder_name)
+    try:
+        encoder = ModelManager.get_instance().get_encoder()
+    except Exception:
+        encoder = get_image_encoder(encoder_name)
 
     synthetic_report = evaluate_synthetic_blurs(cards, matcher, encoder, num_cards=num_cards)
     real_gameplay_report = evaluate_real_gameplay_images(cards, matcher, encoder)
     learned_memory_report = evaluate_learned_memory(cards, matcher, encoder)
     unseen_cards_report = evaluate_unseen_cards(cards, matcher, encoder, num_held_out=15)
+    latency_report = profile_pipeline_latencies(cards, matcher, encoder, num_trials=25)
 
     full_report = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -261,10 +361,13 @@ def run_comprehensive_evaluation(num_cards: int = 40, encoder_name: str = "dinov
         "real_roblox_blur_images": real_gameplay_report,
         "previously_learned_images": learned_memory_report,
         "previously_unseen_cards": unseen_cards_report,
+        "latency_profile": latency_report,
         "summary": {
             "synthetic_top1_percent": synthetic_report["top1_accuracy_percent"],
             "avg_latency_ms": synthetic_report["avg_latency_ms"],
             "p95_latency_ms": synthetic_report["p95_latency_ms"],
+            "e2e_pipeline_p50_ms": latency_report["total_end_to_end"]["p50_ms"],
+            "e2e_pipeline_p95_ms": latency_report["total_end_to_end"]["p95_ms"],
             "real_samples_count": real_gameplay_report["available_samples"],
             "disclaimer": "Metrics are measured independently. Real-game accuracy reflects verified gameplay samples only."
         }

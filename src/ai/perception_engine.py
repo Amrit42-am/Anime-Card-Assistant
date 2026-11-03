@@ -54,19 +54,24 @@ class PerceptionEngine:
         self.option_reader = option_reader or OptionReader()
         self.sharpness_threshold = sharpness_threshold
 
-    def perceive_frame(self, run_ocr: bool = True) -> PerceptionFrame:
+    def perceive_frame(
+        self,
+        run_ocr: bool = True,
+        bundle: Optional[Dict[str, Any]] = None
+    ) -> PerceptionFrame:
         """
         Captures the current game state, crops subregions, and executes OCR.
+        Uses supplied bundle if provided (e.g. for testing/mocking).
         """
         now = time.time()
-        bundle = self.capture.capture_quiz_bundle()
+        b = bundle if bundle is not None else self.capture.capture_quiz_bundle()
 
-        card_frame = bundle.get("card_frame")
-        button_frames = bundle.get("button_frames", [])
-        options_frame = bundle.get("options_frame")
-        timer_frame = bundle.get("timer_frame")
-        banner_frame = bundle.get("banner_frame")
-        game_frame = bundle.get("game_frame")
+        card_frame = b.get("card_frame")
+        button_frames = b.get("button_frames", [])
+        options_frame = b.get("options_frame")
+        timer_frame = b.get("timer_frame")
+        banner_frame = b.get("banner_frame")
+        game_frame = b.get("game_frame")
 
         sharpness = compute_image_sharpness(card_frame) if card_frame is not None else 0.0
         is_unblurred = sharpness >= self.sharpness_threshold
@@ -74,7 +79,14 @@ class PerceptionEngine:
         # Run OCR on 2x2 buttons
         candidates: List[CandidateOption] = []
         if run_ocr and button_frames and len(button_frames) == 4:
-            candidates = self.option_reader.read_options_from_buttons(button_frames)
+            candidates = self.option_reader.read_options_from_buttons(button_frames, use_retry=False)
+            valid_count = sum(1 for c in candidates if c.is_valid and c.card_id is not None)
+            if valid_count < 4:
+                # Retry with alternative aggressive preprocessing
+                retry_candidates = self.option_reader.read_options_from_buttons(button_frames, use_retry=True)
+                retry_valid = sum(1 for c in retry_candidates if c.is_valid and c.card_id is not None)
+                if retry_valid > valid_count:
+                    candidates = retry_candidates
 
         # Banner text extraction
         banner_text = ""
@@ -99,3 +111,4 @@ class PerceptionEngine:
             banner_text=banner_text,
             timestamp=now
         )
+

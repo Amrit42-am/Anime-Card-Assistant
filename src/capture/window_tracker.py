@@ -8,6 +8,7 @@ and fullscreen transitions, and filters out non-game overlay windows.
 
 from dataclasses import dataclass
 import logging
+import os
 from typing import Optional, List, Dict, Any
 
 logger = logging.getLogger("window_tracker")
@@ -58,6 +59,7 @@ class WindowTracker:
             )
             window_list = Quartz.CGWindowListCopyWindowInfo(options, Quartz.kCGNullWindowID)
 
+            current_pid = os.getpid()
             candidates: List[WindowInfo] = []
             for win in window_list:
                 owner = str(win.get(Quartz.kCGWindowOwnerName, ""))
@@ -65,8 +67,15 @@ class WindowTracker:
                 bounds_dict = win.get(Quartz.kCGWindowBounds, {})
                 layer = win.get(Quartz.kCGWindowLayer, 0)
                 is_on_screen = bool(win.get(Quartz.kCGWindowIsOnscreen, True))
+                win_pid = win.get(Quartz.kCGWindowOwnerPID, 0)
 
-                # Ignore non-standard window layers (like menus, popups, and our assistant overlay)
+                # Ignore windows from our own assistant process or with overlay titles
+                if win_pid == current_pid:
+                    continue
+                if any(x in owner.lower() or x in name.lower() for x in ["anime card", "assistant overlay", "calibration"]):
+                    continue
+
+                # Ignore non-standard window layers (like menus, popups, and floating HUDs)
                 if layer != 0:
                     continue
 
@@ -124,3 +133,4 @@ class WindowTracker:
         """Returns True if the target window is currently tracked and on-screen."""
         win = self.find_target_window()
         return win is not None and win.is_on_screen
+

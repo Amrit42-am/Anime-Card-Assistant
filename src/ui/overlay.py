@@ -28,9 +28,10 @@ logger = logging.getLogger("overlay_ui")
 class FloatingOverlay(QWidget):
     """Floating transparent desktop assistant panel."""
 
-    def __init__(self, pipeline: QuizPipeline, parent=None):
+    def __init__(self, pipeline: QuizPipeline, is_offline: bool = True, parent=None):
         super().__init__(parent)
         self.pipeline = pipeline
+        self.is_offline = is_offline
         self.drag_position = QPoint()
         self.worker: Optional[PipelineWorker] = None
         self.last_result: Optional[AnswerResult] = None
@@ -114,8 +115,10 @@ class FloatingOverlay(QWidget):
         self.live_indicator.setStyleSheet("color: #4ade80; font-weight: bold; font-size: 11px;")
         header.addWidget(self.live_indicator)
 
-        self.offline_indicator = QLabel("🔒 OFFLINE")
-        self.offline_indicator.setStyleSheet("color: #38bdf8; font-weight: bold; font-size: 10px; background: rgba(56, 189, 248, 0.15); border-radius: 3px; padding: 2px 4px;")
+        self.offline_indicator = QLabel("🔒 OFFLINE" if self.is_offline else "● CONNECTED")
+        off_color = "#38bdf8" if self.is_offline else "#94a3b8"
+        off_bg = "rgba(56, 189, 248, 0.15)" if self.is_offline else "rgba(148, 163, 184, 0.15)"
+        self.offline_indicator.setStyleSheet(f"color: {off_color}; font-weight: bold; font-size: 10px; background: {off_bg}; border-radius: 3px; padding: 2px 4px;")
         header.addWidget(self.offline_indicator)
 
         self.btn_compact = QPushButton("▾ Compact")

@@ -145,3 +145,4 @@ class GameLocator:
             is_auto_tracked=self.is_auto_tracked,
             source_window_title=title
         )
+

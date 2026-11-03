@@ -1,18 +1,18 @@
 {
-  "timestamp": "2026-11-03T22:05:09Z",
+  "timestamp": "2026-11-03T22:31:46Z",
   "model": "dinov2",
   "data_leakage_prevented": true,
   "synthetic_images": {
     "total_evaluations": 120,
-    "top1_accuracy_percent": 100.0,
+    "top1_accuracy_percent": 99.17,
     "top2_accuracy_percent": 100.0,
-    "avg_latency_ms": 18.74,
-    "p95_latency_ms": 19.39,
+    "avg_latency_ms": 18.13,
+    "p95_latency_ms": 18.46,
     "per_distortion_breakdown": {
       "gaussian_jitter": 100.0,
       "box_jitter": 100.0,
       "motion_blur": 100.0,
-      "compound_noise": 100.0
+      "compound_noise": 96.67
     }
   },
   "real_roblox_blur_images": {
@@ -30,10 +30,50 @@
     "correctly_flagged_uncertain_percent": 100.0,
     "note": "Evaluates confidence calibration when true card is absent from candidate pool."
   },
+  "latency_profile": {
+    "num_trials": 25,
+    "screen_capture": {
+      "mean_ms": 19.93,
+      "p50_ms": 19.25,
+      "p95_ms": 25.77,
+      "min_ms": 14.81,
+      "max_ms": 41.06
+    },
+    "ocr_extraction": {
+      "mean_ms": 16.56,
+      "p50_ms": 16.43,
+      "p95_ms": 19.9,
+      "min_ms": 14.17,
+      "max_ms": 26.81
+    },
+    "encoder_inference": {
+      "mean_ms": 17.94,
+      "p50_ms": 17.94,
+      "p95_ms": 18.31,
+      "min_ms": 17.44,
+      "max_ms": 18.34
+    },
+    "candidate_matching": {
+      "mean_ms": 0.08,
+      "p50_ms": 0.07,
+      "p95_ms": 0.09,
+      "min_ms": 0.06,
+      "max_ms": 0.1
+    },
+    "total_end_to_end": {
+      "mean_ms": 54.51,
+      "p50_ms": 53.6,
+      "p95_ms": 66.25,
+      "min_ms": 49.25,
+      "max_ms": 75.87
+    }
+  },
   "summary": {
-    "synthetic_top1_percent": 100.0,
-    "avg_latency_ms": 18.74,
-    "p95_latency_ms": 19.39,
+    "synthetic_top1_percent": 99.17,
+    "avg_latency_ms": 18.13,
+    "p95_latency_ms": 18.46,
+    "e2e_pipeline_p50_ms": 53.6,
+    "e2e_pipeline_p95_ms": 66.25,
     "real_samples_count": 3,
     "disclaimer": "Metrics are measured independently. Real-game accuracy reflects verified gameplay samples only."
   }
