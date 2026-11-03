@@ -40,14 +40,16 @@ class ModelManager:
         self,
         model_name: str = "vit_small_patch14_dinov2.lvd142m",
         models_dir: Path = Path("models"),
-        require_offline: bool = False
+        require_offline: bool = True
     ):
         if getattr(self, "_initialized", False) and getattr(self, "models_dir", None) == Path(models_dir):
             return
 
         self.models_dir = Path(models_dir)
         self.model_name = model_name
-        self.require_offline = require_offline or (os.environ.get("REQUIRE_OFFLINE", "0") == "1")
+        self.require_offline = require_offline
+        if os.environ.get("REQUIRE_OFFLINE") == "0":
+            self.require_offline = False
         self._device = self._resolve_device()
 
         # Enforce offline mode in PyTorch / HuggingFace
@@ -76,10 +78,19 @@ class ModelManager:
 
         self._initialized = True
 
+    @staticmethod
+    def compute_sha256(filepath: Path) -> str:
+        """Computes SHA256 checksum of a file in 1MB chunks."""
+        sha = hashlib.sha256()
+        with open(filepath, "rb") as f:
+            while chunk := f.read(1024 * 1024):
+                sha.update(chunk)
+        return sha.hexdigest()
+
     def verify_manifest(self, models_dir: Optional[Path] = None) -> Tuple[bool, str]:
         """
-        Validates local model checkpoints and embedding file dimensions
-        against models/manifest.json.
+        Validates local model checkpoints, SHA256 checksums, file sizes,
+        and embedding dimensions/card counts against models/manifest.json.
         """
         dir_to_check = Path(models_dir) if models_dir is not None else self.models_dir
         manifest_path = dir_to_check / "manifest.json"
@@ -99,6 +110,20 @@ class ModelManager:
             if not model_path.exists():
                 return False, f"Model file missing at {model_path}"
 
+            # Verify model file size if specified
+            if "size_bytes" in dinov2_spec:
+                actual_size = model_path.stat().st_size
+                expected_size = dinov2_spec["size_bytes"]
+                if actual_size != expected_size:
+                    return False, f"Model file size mismatch for {model_path}: got {actual_size} bytes, expected {expected_size} bytes"
+
+            # Verify model SHA256 checksum if specified
+            if "sha256" in dinov2_spec:
+                actual_sha = self.compute_sha256(model_path)
+                expected_sha = dinov2_spec["sha256"]
+                if actual_sha.lower() != expected_sha.lower():
+                    return False, f"Model SHA256 mismatch for {model_path}: got {actual_sha}, expected {expected_sha}"
+
             # Check embeddings file
             emb_spec = manifest.get("embeddings")
             if emb_spec:
@@ -106,13 +131,22 @@ class ModelManager:
                 if not emb_path.exists():
                     return False, f"Embeddings file missing at {emb_path}"
 
-                # Verify embedding dimension
+                # Verify embedding dimension and card count
                 data = np.load(emb_path, allow_pickle=True)
                 clean_emb = data["clean_embeddings"]
-                if clean_emb.shape[1] != emb_spec["dimension"]:
+
+                expected_cards = emb_spec.get("expected_cards", 286)
+                if clean_emb.shape[0] != expected_cards:
+                    return False, (
+                        f"Incompatible embeddings card count ({clean_emb.shape[0]}), "
+                        f"expected {expected_cards}"
+                    )
+
+                expected_dim = emb_spec.get("dimension", 384)
+                if clean_emb.shape[1] != expected_dim:
                     return False, (
                         f"Incompatible embeddings dimension ({clean_emb.shape[1]}), "
-                        f"expected {emb_spec['dimension']}"
+                        f"expected {expected_dim}"
                     )
 
             return True, "All model checkpoints and embeddings verified locally"
@@ -154,7 +188,7 @@ class ModelManager:
         cls._instance = None
 
     @classmethod
-    def get_instance(cls, require_offline: bool = False) -> "ModelManager":
+    def get_instance(cls, require_offline: bool = True) -> "ModelManager":
         if cls._instance is None:
             cls._instance = cls(require_offline=require_offline)
         return cls._instance

@@ -310,8 +310,20 @@ class FloatingOverlay(QWidget):
         """Displays high-confidence predicted card."""
         self.last_result = result
         self.auto_learn_banner.setVisible(False)
-        self.state_label.setText("ANSWER FOUND")
-        self.state_label.setStyleSheet("color: #4ade80; font-weight: bold;")
+
+        stage = getattr(result, "prediction_stage", "CONFIDENT")
+        obs_count = getattr(result, "observation_count", 1)
+        agreement = getattr(result, "temporal_agreement", 1.0)
+
+        if stage == "PROVISIONAL":
+            self.state_label.setText("PROVISIONAL ANSWER (Frame 1)")
+            self.state_label.setStyleSheet("color: #38bdf8; font-weight: bold;")
+        elif stage == "STABILIZING":
+            self.state_label.setText(f"STABILIZING ({obs_count} frames, {agreement*100:.0f}%)")
+            self.state_label.setStyleSheet("color: #a78bfa; font-weight: bold;")
+        else:
+            self.state_label.setText(f"CONFIDENT ANSWER ({agreement*100:.0f}% Agreement)")
+            self.state_label.setStyleSheet("color: #4ade80; font-weight: bold;")
 
         self.card_name_label.setText(result.card_name.upper())
         self.card_name_label.setStyleSheet("font-size: 21px; font-weight: 800; color: #4ade80; padding: 4px 0;")

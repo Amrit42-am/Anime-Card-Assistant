@@ -52,6 +52,8 @@ class QuizPipeline:
         self.state = "IDLE"
         self.last_result: Optional[AnswerResult] = None
         self.last_collection_report: Optional[CollectionReport] = None
+        self.current_candidates: List[CandidateOption] = []
+        self.current_session_id: Optional[str] = None
 
         logger.info("Initializing autonomous AI pipeline modules...")
         self.display_monitor = DisplayMonitor()
@@ -126,20 +128,23 @@ class QuizPipeline:
     def step(self) -> Tuple[Optional[AnswerResult], Optional[CollectionReport]]:
         """
         Executes a single monitoring step:
-        1. Capture screen bundle (tracked via GameLocator/WindowTracker).
+        1. Capture and slice screen via PerceptionEngine (tracked via GameLocator/WindowTracker).
         2. Advance QuestionDetector & ContextAnalyzer state machine.
-        3. If ACTIVE_QUESTION: execute CandidateReasoner + TemporalAnalyzer for live prediction.
+        3. If ACTIVE_QUESTION: execute CandidateReasoner + TemporalAnalyzer for live prediction & stabilization.
         4. If RESULT_REVEALED: execute ResultDetector + AdaptiveLearning for dual-verification learning.
         Returns (AnswerResult or None, CollectionReport or None).
         """
-        # 1. Screen capture bundle (uses automatic Roblox window tracking)
-        bundle = self.capture.capture_quiz_bundle(self.calibration)
-        event: QuestionEvent = self.detector.process_frame_bundle(bundle)
+        # 1. PerceptionEngine unified perception entry point
+        p_frame: PerceptionFrame = self.perception_engine.perceive_frame()
+        event: QuestionEvent = self.detector.process_frame_bundle(p_frame)
 
         # 2. Advance ContextAnalyzer
         state = self.context_analyzer.evaluate_transition(
-            is_active_question=event.question_detected or (self.detector.current_state == "ACTIVE_QUESTION" and not (self.context_analyzer.active_session and self.context_analyzer.active_session.has_predicted)),
-            is_result_screen=event.is_result_detected or self.detector.current_state == "RESULT_REVEALED",
+            is_active_question=event.question_detected or (
+                self.detector.current_state in ("ACTIVE_QUESTION", "ANSWER_RECOGNITION") and
+                not (self.context_analyzer.active_session and self.context_analyzer.active_session.result_processed)
+            ),
+            is_result_screen=event.is_result_detected or self.detector.current_state in ("RESULT_REVEALED", "SAMPLE_VERIFICATION"),
             card_hash=event.card_hash,
             timestamp=event.timestamp
         )
@@ -147,29 +152,35 @@ class QuizPipeline:
         answer_res: Optional[AnswerResult] = None
         collection_rep: Optional[CollectionReport] = None
 
-        # 3. State: ACTIVE_QUESTION -> Deliver live prediction immediately
+        # 3. State: ACTIVE_QUESTION
         if event.question_detected or self.context_analyzer.should_predict():
-            # Safely close or expire any pending session from a previous question
+            # Fresh question detected!
             if self.adaptive_learning:
                 self.adaptive_learning.expire_pending_question("new_question_started")
 
             sid = self.context_analyzer.active_session.session_id if self.context_analyzer.active_session else f"q_{int(event.timestamp)}"
+            self.current_session_id = sid
             self.temporal_analyzer.set_session(sid)
+            self.current_candidates = p_frame.ocr_candidates
 
             self.state = "ACTIVE_QUESTION"
-            logger.info("Pipeline: New question detected! Commencing sub-100ms candidate analysis...")
+            logger.info("Pipeline: New question detected (%s)! Commencing sub-100ms candidate analysis...", sid)
 
-            card_frame = event.card_frame
-            button_frames = event.button_frames
-            options_frame = event.options_frame
+            card_frame = p_frame.card_frame
+            button_frames = p_frame.button_frames
+            options_frame = p_frame.options_frame
 
             result = self.decision_engine.process_question(
                 card_frame=card_frame,
                 button_frames=button_frames,
-                options_frame=options_frame
+                options_frame=options_frame,
+                ocr_candidates=self.current_candidates,
+                prediction_stage="PROVISIONAL",
+                observation_count=1,
+                temporal_agreement=1.0
             )
 
-            # Push to temporal analyzer for multi-frame stabilization
+            # Push initial snapshot to temporal analyzer
             reasoned_proxy = ReasonedAnswer(
                 card_name=result.card_name,
                 card_id=result.card_id,
@@ -182,19 +193,21 @@ class QuizPipeline:
                 runner_up_score=result.runner_up_score or 0.0,
                 source=result.matched_from,
                 status=result.status,
-                raw_match=result.to_dict()
+                raw_match=result.to_dict(),
+                query_embedding=result.query_embedding,
+                captured_image=result.captured_image
             )
             self.temporal_analyzer.push(
                 answer=reasoned_proxy,
                 session_id=sid,
-                timer_val=None,
+                timer_val=p_frame.timer_value,
                 timestamp=event.timestamp
             )
 
             self.last_result = result
             self.state = "ANSWER_READY" if result.status == "matched" else "UNCERTAIN"
-            logger.info("Pipeline live prediction: %s (Slot: %s, Confidence: %.2f from %s) in %.1f ms",
-                        result.card_name, result.button_slot, result.confidence, result.matched_from, result.processing_time_ms)
+            logger.info("Pipeline live prediction: %s (Slot: %s, Confidence: %.2f from %s) in %.1f ms [%s]",
+                        result.card_name, result.button_slot, result.confidence, result.matched_from, result.processing_time_ms, result.prediction_stage)
 
             # Mark predicted in context analyzer
             self.context_analyzer.mark_predicted(result.card_name, result.button_slot)
@@ -216,25 +229,128 @@ class QuizPipeline:
 
             answer_res = result
 
+        elif (
+            self.context_analyzer.is_in_active_question() and
+            not event.is_result_detected and
+            self.detector.current_state not in ("RESULT_REVEALED", "SAMPLE_VERIFICATION")
+        ):
+            # Subsequent active-question frames: Multi-frame temporal stabilization
+            sid = self.context_analyzer.active_session.session_id if self.context_analyzer.active_session else self.current_session_id
+            if p_frame.card_frame is not None and p_frame.card_frame.size > 0:
+                cands = self.current_candidates or p_frame.ocr_candidates
+
+                frame_result = self.decision_engine.process_question(
+                    card_frame=p_frame.card_frame,
+                    button_frames=p_frame.button_frames,
+                    options_frame=p_frame.options_frame,
+                    ocr_candidates=cands,
+                    prediction_stage="STABILIZING"
+                )
+
+                frame_proxy = ReasonedAnswer(
+                    card_name=frame_result.card_name,
+                    card_id=frame_result.card_id,
+                    slot_index=frame_result.button_slot,
+                    confidence=frame_result.confidence,
+                    confidence_level=frame_result.confidence_level,
+                    margin=frame_result.margin,
+                    is_confident=(frame_result.status == "matched"),
+                    runner_up_name=frame_result.runner_up_name,
+                    runner_up_score=frame_result.runner_up_score or 0.0,
+                    source=frame_result.matched_from,
+                    status=frame_result.status,
+                    raw_match=frame_result.to_dict(),
+                    query_embedding=frame_result.query_embedding,
+                    captured_image=frame_result.captured_image
+                )
+
+                self.temporal_analyzer.push(
+                    answer=frame_proxy,
+                    session_id=sid,
+                    timer_val=p_frame.timer_value,
+                    timestamp=event.timestamp
+                )
+
+                # Retrieve temporally stabilized answer
+                stab_ans, agreement_ratio, obs_count = self.temporal_analyzer.get_stabilized_answer(
+                    session_id=sid,
+                    return_details=True
+                )
+
+                if stab_ans is not None and obs_count >= 2:
+                    is_constrained = (len(cands) == 4 and len(set(c.card_id for c in cands if c.card_id)) == 4)
+                    verdict = self.confidence_engine.evaluate(
+                        top_score=stab_ans.raw_match.get("raw_score", stab_ans.confidence),
+                        runner_up_score=stab_ans.runner_up_score or 0.0,
+                        candidate_constrained=is_constrained,
+                        source=stab_ans.source,
+                        ocr_quality=frame_result.confidence,
+                        candidate_count=len(cands),
+                        temporal_agreement=agreement_ratio
+                    )
+
+                    if obs_count >= 3 and agreement_ratio >= 0.70 and verdict.is_confident and stab_ans.slot_index is not None:
+                        stage = "CONFIDENT"
+                        status = "matched"
+                        final_conf = verdict.calibrated_confidence
+                    elif agreement_ratio >= 0.60 and verdict.is_confident and stab_ans.slot_index is not None:
+                        stage = "STABILIZING"
+                        status = "matched"
+                        final_conf = verdict.calibrated_confidence
+                    else:
+                        stage = "UNCERTAIN"
+                        status = "uncertain"
+                        final_conf = min(verdict.calibrated_confidence, 0.40)
+
+                    stab_result = AnswerResult(
+                        status=status,
+                        card_name=stab_ans.card_name,
+                        card_id=stab_ans.card_id,
+                        confidence=final_conf,
+                        confidence_level=verdict.confidence_level if status == "matched" else "UNCERTAIN",
+                        matched_from=stab_ans.source,
+                        raw_score=stab_ans.raw_match.get("raw_score", stab_ans.confidence),
+                        margin=verdict.margin_of_victory,
+                        candidates=[c.canonical_name for c in cands if c.canonical_name],
+                        alternatives=stab_ans.raw_match.get("alternatives", []),
+                        explanation=f"{verdict.explanation} (Obs: {obs_count}, Agreement: {agreement_ratio*100:.0f}%)",
+                        processing_time_ms=frame_result.processing_time_ms,
+                        button_slot=stab_ans.slot_index,
+                        runner_up_name=stab_ans.runner_up_name,
+                        runner_up_score=stab_ans.runner_up_score,
+                        captured_image=p_frame.card_frame.copy(),
+                        query_embedding=stab_ans.query_embedding,
+                        prediction_stage=stage,
+                        temporal_agreement=round(agreement_ratio, 3),
+                        observation_count=obs_count
+                    )
+
+                    self.last_result = stab_result
+                    answer_res = stab_result
+
         # 4. State: RESULT_REVEALED -> Process ground-truth automatic learning
-        elif (event.is_result_detected or self.detector.current_state == "RESULT_REVEALED" or self.context_analyzer.should_process_result()) and self.sample_collector and self.sample_collector.pending_question is not None:
+        elif (
+            (event.is_result_detected or self.detector.current_state in ("RESULT_REVEALED", "SAMPLE_VERIFICATION") or self.context_analyzer.should_process_result()) and
+            self.adaptive_learning and
+            self.adaptive_learning.pending_question is not None
+        ):
             self.state = "RESULT_REVEALED"
             self.context_analyzer.mark_verifying()
             logger.debug("Pipeline: Processing result screen frame...")
 
             res_event: ResultDetectionEvent = self.result_detector.evaluate_screen(
-                card_frame=event.card_frame,
-                button_frames=event.button_frames,
-                options_frame=event.options_frame,
-                timer_frame=event.timer_frame,
-                banner_frame=event.banner_frame,
-                candidate_names=self.sample_collector.pending_question.option_names,
+                card_frame=p_frame.card_frame,
+                button_frames=p_frame.button_frames,
+                options_frame=p_frame.options_frame,
+                timer_frame=p_frame.timer_frame,
+                banner_frame=p_frame.banner_frame,
+                candidate_names=self.adaptive_learning.pending_question.option_names,
                 timestamp=event.timestamp
             )
 
-            report = self.sample_collector.process_result(
-                clear_frame=event.card_frame,
-                button_frames=event.button_frames,
+            report = self.adaptive_learning.process_result(
+                clear_frame=p_frame.card_frame,
+                button_frames=p_frame.button_frames,
                 result_event=res_event,
                 timestamp=event.timestamp
             )
@@ -244,6 +360,7 @@ class QuizPipeline:
                 collection_rep = report
                 self.detector.notify_sample_verified()
                 self.context_analyzer.mark_result_completed()
+                self.current_candidates = []
                 logger.info("Pipeline auto-learning outcome: %s (Sample ID: %s, Status: %s)",
                             report.message, report.sample_id, report.status)
             else:

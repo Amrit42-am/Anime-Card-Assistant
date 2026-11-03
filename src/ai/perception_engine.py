@@ -7,6 +7,7 @@ measures card image sharpness, reads candidate texts via local OCR,
 and extracts result banner messages.
 """
 
+import re
 from dataclasses import dataclass
 import logging
 import time
@@ -35,6 +36,7 @@ class PerceptionFrame:
     is_card_unblurred: bool
     banner_text: str
     timestamp: float
+    timer_value: Optional[float] = None
 
 
 class PerceptionEngine:
@@ -88,6 +90,21 @@ class PerceptionEngine:
                 if retry_valid > valid_count:
                     candidates = retry_candidates
 
+        # Timer numeric extraction
+        timer_value: Optional[float] = None
+        if timer_frame is not None and timer_frame.size > 0:
+            timer_texts = self.option_reader.extract_text_vision(timer_frame)
+            if not timer_texts:
+                timer_texts = self.option_reader.extract_text_fallback(timer_frame)
+            for t_str, _, _ in timer_texts:
+                match = re.search(r"(\d+(\.\d+)?)", t_str)
+                if match:
+                    try:
+                        timer_value = float(match.group(1))
+                        break
+                    except ValueError:
+                        pass
+
         # Banner text extraction
         banner_text = ""
         target_banner = banner_frame if (banner_frame is not None and banner_frame.size > 0) else timer_frame
@@ -109,6 +126,7 @@ class PerceptionEngine:
             card_sharpness=round(sharpness, 2),
             is_card_unblurred=is_unblurred,
             banner_text=banner_text,
-            timestamp=now
+            timestamp=now,
+            timer_value=timer_value
         )
 

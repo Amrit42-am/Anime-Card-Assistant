@@ -140,16 +140,24 @@ class QuestionDetector:
 
         return has_green, has_red
 
-    def process_frame_bundle(self, bundle: Dict[str, Any]) -> QuestionEvent:
+    def process_frame_bundle(self, bundle: Any) -> QuestionEvent:
         """
-        Advances the state machine based on visual evidence from frame bundle.
+        Advances the state machine based on visual evidence from frame bundle
+        or PerceptionFrame.
         """
         now = time.time()
-        card_frame = bundle.get("card_frame")
-        options_frame = bundle.get("options_frame")
-        button_frames = bundle.get("button_frames")
-        timer_frame = bundle.get("timer_frame")
-        banner_frame = bundle.get("banner_frame")
+        if isinstance(bundle, dict):
+            card_frame = bundle.get("card_frame")
+            options_frame = bundle.get("options_frame")
+            button_frames = bundle.get("button_frames")
+            timer_frame = bundle.get("timer_frame")
+            banner_frame = bundle.get("banner_frame")
+        else:
+            card_frame = getattr(bundle, "card_frame", None)
+            options_frame = getattr(bundle, "options_frame", None)
+            button_frames = getattr(bundle, "button_frames", None)
+            timer_frame = getattr(bundle, "timer_frame", None)
+            banner_frame = getattr(bundle, "banner_frame", None)
 
         if card_frame is None or options_frame is None or not self.has_card_content(card_frame):
             if self.current_state != "IDLE":

@@ -6,7 +6,7 @@
       "filename": "dinov2/vit_small_patch14_dinov2.safetensors",
       "sha256": "04d27f3400d059fc0cfd7d17dd1909a75bf3ea8fb3eeb48b97cb99e57ee20081",
       "expected_dimension": 384,
-      "size_bytes": 88169976
+      "size_bytes": 88240510
     }
   },
   "embeddings": {

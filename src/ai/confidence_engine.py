@@ -103,9 +103,10 @@ class ConfidenceEngine:
             is_confident = False
             reasons.append(f"Incomplete candidate set ({candidate_count}/4 resolved)")
 
-        if temporal_agreement < 0.5:
+        if temporal_agreement < 0.60:
             is_confident = False
-            reasons.append(f"Temporal agreement ({temporal_agreement:.2f}) < 0.50")
+            calibrated = min(calibrated, round(calibrated * temporal_agreement, 4))
+            reasons.append(f"Low temporal agreement ({temporal_agreement:.2f} < 0.60)")
 
         if is_confident:
             if calibrated >= 0.85:

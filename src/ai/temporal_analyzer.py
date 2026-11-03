@@ -86,14 +86,20 @@ class TemporalAnalyzer:
     def get_stabilized_answer(
         self,
         session_id: Optional[str] = None,
-        return_agreement: bool = False
+        return_agreement: bool = False,
+        return_details: bool = False
     ) -> Any:
         """
         Computes the temporally stabilized answer across the rolling window.
-        Returns stabilized_answer (or (stabilized_answer, agreement_ratio) if return_agreement=True).
+        Returns:
+          - (best_answer, agreement_ratio, observation_count) if return_details=True
+          - (best_answer, agreement_ratio) if return_agreement=True
+          - best_answer otherwise
         Filters snapshots to ensure only answers from the requested session are counted.
         """
         if not self.history:
+            if return_details:
+                return (None, 0.0, 0)
             return (None, 0.0) if return_agreement else None
 
         target_sid = session_id or self.current_session_id
@@ -106,6 +112,8 @@ class TemporalAnalyzer:
 
         if not active_snaps:
             latest = self.history[-1].answer
+            if return_details:
+                return (latest, 1.0, 1)
             return (latest, 1.0) if return_agreement else latest
 
         # Accumulate weights per card name
@@ -126,6 +134,8 @@ class TemporalAnalyzer:
         agreement_ratio = top_weight / total_weight if total_weight > 0 else 0.0
         best_answer = candidate_map[top_name]
 
+        if return_details:
+            return best_answer, round(agreement_ratio, 4), len(active_snaps)
         if return_agreement:
             return best_answer, round(agreement_ratio, 4)
         return best_answer
@@ -144,3 +154,8 @@ class TemporalAnalyzer:
         self.last_timer = None
         self.last_timer_time = None
         self.timer_trend = 0.0
+
+    def reset(self):
+        """Resets the analyzer and clears history and session."""
+        self.clear()
+        self.current_session_id = None

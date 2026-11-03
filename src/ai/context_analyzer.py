@@ -172,12 +172,28 @@ class ContextAnalyzer:
             self.active_session.result_processed = True
             self.current_state = QuizState.TRANSITION
 
+    @property
+    def current_session_id(self) -> Optional[str]:
+        return self.active_session.session_id if self.active_session else None
+
     def should_predict(self) -> bool:
         """Determines if a prediction should be emitted for the current frame."""
         return (
             self.current_state in (QuizState.QUESTION_DETECTED, QuizState.ANALYZING) and
             self.active_session is not None and
             not self.active_session.has_predicted
+        )
+
+    def is_in_active_question(self) -> bool:
+        """Returns True if a question session is currently active and awaiting result."""
+        return (
+            self.active_session is not None and
+            not self.active_session.result_processed and
+            self.current_state in (
+                QuizState.QUESTION_DETECTED,
+                QuizState.ANALYZING,
+                QuizState.ANSWER_DISPLAYED
+            )
         )
 
     def should_process_result(self) -> bool:

@@ -15,6 +15,7 @@ import pytest
 from src.capture.region_manager import CalibrationConfig
 from src.core.pipeline import QuizPipeline
 from src.core.decision_engine import AnswerResult
+from src.ai.context_analyzer import QuizState
 
 
 @pytest.fixture(scope="module")
@@ -129,16 +130,20 @@ def test_pipeline_step_lifecycle(pipeline):
 
     pipeline.detector.reset()
 
-    # Step 1: Active question frame
+    # Step 1: Active question frame (Provisional answer)
     answer, report = pipeline.step()
     assert answer is not None
     assert answer.status == "matched"
     assert answer.card_name == "Green Bomber"
+    assert answer.prediction_stage == "PROVISIONAL"
     assert report is None
 
-    # Step 2: Next frame during active question (no duplicate prediction)
+    # Step 2: Next frame during active question (Multi-frame temporal stabilization)
     answer2, report2 = pipeline.step()
-    assert answer2 is None
+    assert answer2 is not None
+    assert answer2.card_name == "Green Bomber"
+    assert answer2.prediction_stage in ("STABILIZING", "CONFIDENT")
+    assert answer2.observation_count >= 2
     assert report2 is None
 
     # 2. Result Revealed Screen (Green Bomber button is green)
@@ -224,4 +229,185 @@ def test_pipeline_advanced_ai_modules_wired(pipeline, monkeypatch):
         assert called_tracker["temporal"] >= 1
     finally:
         pipeline.capture.capture_quiz_bundle = orig_capture
+
+
+def test_perception_engine_eliminates_redundant_ocr(pipeline, monkeypatch):
+    """
+    Verifies that PerceptionEngine is the live perception entry point and its
+    precomputed OCR candidates are directly consumed by DecisionEngine without
+    triggering duplicate OCR in OptionReader.
+    """
+    options = ["Green Bomber", "Harmonious Soul", "Shadow Duelist", "Soul King"]
+    bundle = create_mock_quiz_frame("Green Bomber", options)
+    orig_capture = pipeline.capture.capture_quiz_bundle
+    pipeline.capture.capture_quiz_bundle = lambda *args, **kwargs: bundle
+    pipeline.detector.reset()
+
+    # Spy on OptionReader.read_options_from_buttons and read_options_from_grid
+    ocr_calls = {"from_buttons": 0}
+    orig_read_buttons = pipeline.option_reader.read_options_from_buttons
+
+    def spy_read_buttons(*args, **kwargs):
+        ocr_calls["from_buttons"] += 1
+        return orig_read_buttons(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline.option_reader, "read_options_from_buttons", spy_read_buttons)
+
+    # Spy on PerceptionEngine.perceive_frame
+    perceive_called = {"count": 0}
+    orig_perceive = pipeline.perception_engine.perceive_frame
+
+    def spy_perceive(*args, **kwargs):
+        perceive_called["count"] += 1
+        return orig_perceive(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline.perception_engine, "perceive_frame", spy_perceive)
+
+    try:
+        answer, _ = pipeline.step()
+        assert answer is not None
+        assert perceive_called["count"] == 1, "PerceptionEngine.perceive_frame must be invoked by pipeline.step()"
+        # In perception_engine, read_options_from_buttons or read_options_from_grid is called ONCE.
+        # DecisionEngine must NOT invoke it again because ocr_candidates was passed!
+        # If DecisionEngine had re-run OCR, ocr_calls["from_buttons"] would be >= 2.
+        assert ocr_calls["from_buttons"] <= 1, "DecisionEngine must not re-run OCR when PerceptionFrame provides candidates"
+    finally:
+        pipeline.capture.capture_quiz_bundle = orig_capture
+
+
+def test_temporal_contradictory_evidence_penalizes_confidence(pipeline):
+    """
+    Verifies that contradictory evidence across frames dynamically degrades confidence
+    and marks prediction_stage as UNCERTAIN.
+    """
+    options_a = ["Green Bomber", "Harmonious Soul", "Shadow Duelist", "Soul King"]
+    bundle_a = create_mock_quiz_frame("Green Bomber", options_a)
+
+    orig_capture = pipeline.capture.capture_quiz_bundle
+    pipeline.detector.reset()
+    pipeline.context_analyzer.reset()
+    pipeline.temporal_analyzer.reset()
+
+    # Frame 1: Sees Green Bomber
+    pipeline.capture.capture_quiz_bundle = lambda *args, **kwargs: bundle_a
+    ans1, _ = pipeline.step()
+    assert ans1 is not None
+    assert ans1.card_name == "Green Bomber"
+    assert ans1.prediction_stage == "PROVISIONAL"
+
+    # Frame 2 & 3: Artificially inject contradictory answers into temporal analyzer for the same session
+    session_id = pipeline.context_analyzer.current_session_id
+    from src.ai.candidate_reasoner import ReasonedAnswer
+    contradictory_ans = ReasonedAnswer(
+        card_name="Celestial Warrior",
+        card_id=1,
+        slot_index=0,
+        confidence=0.85,
+        margin=0.2,
+        is_confident=True,
+        runner_up_name="Green Bomber",
+        runner_up_score=0.6,
+        source="visual",
+        status="matched",
+        raw_match={}
+    )
+    pipeline.temporal_analyzer.push(contradictory_ans, session_id=session_id)
+    pipeline.temporal_analyzer.push(contradictory_ans, session_id=session_id)
+
+    # Frame 4: Run another step under the same question session
+    ans_contra, _ = pipeline.step()
+    assert ans_contra is not None
+    # Now there are 2 Green Bomber and 2 Celestial Warrior -> agreement ratio is 0.50 (< 0.60)
+    assert ans_contra.prediction_stage == "UNCERTAIN"
+    assert ans_contra.confidence <= 0.40
+
+    pipeline.capture.capture_quiz_bundle = orig_capture
+
+
+def test_complete_quiz_lifecycle_state_machine(pipeline):
+    """
+    Tests complete lifecycle sequence:
+    SEARCHING -> QUESTION_DETECTED / ANSWER_DISPLAYED -> RESULT_DETECTED / VERIFYING -> TRANSITION / SEARCHING
+    """
+    import time
+    options = ["Green Bomber", "Harmonious Soul", "Shadow Duelist", "Soul King"]
+    active_bundle = create_mock_quiz_frame("Green Bomber", options)
+    orig_capture = pipeline.capture.capture_quiz_bundle
+
+    pipeline.detector.reset()
+    pipeline.context_analyzer.reset()
+    pipeline.temporal_analyzer.reset()
+    assert pipeline.context_analyzer.current_state in (QuizState.SEARCHING, QuizState.TRANSITION)
+
+    # 1. State: ACTIVE_QUESTION (Frame 1 -> PROVISIONAL)
+    pipeline.capture.capture_quiz_bundle = lambda *args, **kwargs: active_bundle
+    ans_frame1, report1 = pipeline.step()
+    assert ans_frame1 is not None
+    assert ans_frame1.prediction_stage == "PROVISIONAL"
+    assert pipeline.context_analyzer.current_state in (
+        QuizState.QUESTION_DETECTED,
+        QuizState.ANALYZING,
+        QuizState.ANSWER_DISPLAYED
+    )
+    assert report1 is None
+
+    # 2. State: ACTIVE_QUESTION (Frame 2 -> STABILIZING)
+    ans_frame2, report2 = pipeline.step()
+    assert ans_frame2 is not None
+    assert ans_frame2.prediction_stage in ("STABILIZING", "CONFIDENT")
+    assert ans_frame2.observation_count >= 2
+    assert pipeline.context_analyzer.current_state == QuizState.ANSWER_DISPLAYED
+    assert report2 is None
+
+    # 3. State: RESULT_REVEALED (Green button detected + clear artwork)
+    real_card = cv2.imread("assets/cards/card_137_green-bomber.png")
+    result_buttons = []
+    for name in options:
+        btn = np.ones((56, 252, 3), dtype=np.uint8)
+        if name == "Green Bomber":
+            btn[:, :] = (30, 180, 30)  # Green
+        else:
+            btn[:, :] = (40, 40, 40)
+        cv2.putText(btn, name, (10, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        result_buttons.append(btn)
+
+    result_bundle = {
+        "game_frame": active_bundle["game_frame"],
+        "card_frame": real_card,
+        "options_frame": active_bundle["options_frame"],
+        "button_frames": result_buttons,
+        "timer_frame": None,
+    }
+    time.sleep(0.5)
+    pipeline.capture.capture_quiz_bundle = lambda *args, **kwargs: result_bundle
+
+    ans_result, report_result = pipeline.step()
+    assert ans_result is None
+    assert report_result is not None
+    assert report_result.verified is True
+    assert pipeline.context_analyzer.current_state in (
+        QuizState.RESULT_DETECTED,
+        QuizState.VERIFYING,
+        QuizState.LEARNING,
+        QuizState.TRANSITION
+    )
+
+    # 4. State: TRANSITION / SEARCHING (Next frame after result has completed)
+    neutral_bundle = {
+        "game_frame": active_bundle["game_frame"],
+        "card_frame": np.zeros((100, 100, 3), dtype=np.uint8),
+        "options_frame": np.zeros((100, 100, 3), dtype=np.uint8),
+        "button_frames": [np.zeros((50, 100, 3), dtype=np.uint8) for _ in range(4)],
+        "timer_frame": None,
+    }
+    pipeline.capture.capture_quiz_bundle = lambda *args, **kwargs: neutral_bundle
+    ans_trans, report_trans = pipeline.step()
+    assert ans_trans is None
+    assert report_trans is None
+    assert pipeline.context_analyzer.current_state in (QuizState.TRANSITION, QuizState.SEARCHING)
+
+    pipeline.capture.capture_quiz_bundle = orig_capture
+    if report_result and report_result.sample_id:
+        pipeline.memory.invalidate_sample(report_result.sample_id)
+
 

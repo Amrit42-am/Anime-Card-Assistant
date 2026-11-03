@@ -80,6 +80,28 @@ class AdaptiveLearning:
         """Safely expires any pending active question."""
         self.collector.expire_pending_question(reason)
 
+    @property
+    def pending_question(self):
+        """Returns the pending active question from collector."""
+        return self.collector.pending_question
+
+    def process_result(
+        self,
+        clear_frame: np.ndarray,
+        button_frames: List[np.ndarray],
+        result_event: ResultDetectionEvent,
+        timestamp: float
+    ) -> Optional[CollectionReport]:
+        """
+        Coordinates dual-verification result processing, returning CollectionReport.
+        """
+        return self.collector.process_result(
+            clear_frame=clear_frame,
+            button_frames=button_frames,
+            result_event=result_event,
+            timestamp=timestamp
+        )
+
     def process_result_frame(
         self,
         clear_frame: np.ndarray,
