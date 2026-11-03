@@ -22,12 +22,17 @@ logger = logging.getLogger("option_reader")
 
 try:
     import Vision
-    import pytesseract
     from Foundation import NSData
     VISION_AVAILABLE = True
 except ImportError:
     VISION_AVAILABLE = False
     logger.warning("macOS Vision framework not available. PyObjC Vision required for OCR.")
+
+try:
+    import pytesseract
+    TESSERACT_AVAILABLE = True
+except ImportError:
+    TESSERACT_AVAILABLE = False
 
 
 @dataclass
@@ -104,6 +109,8 @@ class OptionReader:
         confidence reported by pytesseract (scaled 0-1). The y coordinate is set to 0.0
         because we cannot obtain it from pytesseract.
         """
+        if not TESSERACT_AVAILABLE:
+            return []
         if image is None or image.size == 0:
             return []
         # Ensure image is 3-channel RGB for pytesseract

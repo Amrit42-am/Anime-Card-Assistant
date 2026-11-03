@@ -21,7 +21,7 @@ fi
 source .venv/bin/activate
 
 # 2. Check and install dependencies
-if ! python -c "import PySide6, torch, timm, cv2, mss, rapidfuzz" &> /dev/null; then
+if ! python -c "import PySide6, torch, timm, cv2, mss, rapidfuzz, safetensors, Vision, Quartz" &> /dev/null; then
     echo "==> Installing required packages from requirements.txt..."
     pip install -r requirements.txt
 fi

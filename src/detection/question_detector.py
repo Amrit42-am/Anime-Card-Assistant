@@ -83,20 +83,31 @@ class QuestionDetector:
         lap = cv2.Laplacian(resized, cv2.CV_64F)
         return float(lap.var())
 
-    def has_button_structure(self, options_frame: np.ndarray) -> bool:
-        """Verifies horizontal button slot boundaries in options area."""
+    def has_button_structure(
+        self,
+        options_frame: np.ndarray,
+        button_frames: Optional[List[np.ndarray]] = None
+    ) -> bool:
+        """Verifies button slot boundaries in options area (supporting both 2x2 grid and options panel)."""
+        if button_frames and len(button_frames) == 4:
+            valid_btns = [b for b in button_frames if b is not None and b.size > 0 and (np.std(b) > 6.0 or np.mean(b) > 15.0)]
+            if len(valid_btns) == 4:
+                return True
+
         if options_frame is None or options_frame.shape[0] < 40 or options_frame.shape[1] < 40:
             return False
         gray = cv2.cvtColor(options_frame, cv2.COLOR_BGR2GRAY) if options_frame.ndim == 3 else options_frame
         sobel_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
-        return float(np.mean(np.abs(sobel_y))) > self.button_edge_threshold
+        sobel_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+        edge_energy = float(np.mean(np.abs(sobel_y) + np.abs(sobel_x)))
+        return edge_energy > self.button_edge_threshold
 
     def has_card_content(self, card_frame: np.ndarray) -> bool:
         """Verifies card artwork box is not solid background."""
         if card_frame is None or card_frame.size == 0:
             return False
         gray = cv2.cvtColor(card_frame, cv2.COLOR_BGR2GRAY) if card_frame.ndim == 3 else card_frame
-        return float(np.std(gray)) > 14.0
+        return float(np.std(gray)) > 8.0
 
     @staticmethod
     def has_result_colors(button_frames: Optional[List[np.ndarray]]) -> Tuple[bool, bool]:
@@ -166,7 +177,7 @@ class QuestionDetector:
         self.last_card_gray = card_gray.copy()
         self.last_card_hash = current_hash
 
-        has_buttons = self.has_button_structure(options_frame)
+        has_buttons = self.has_button_structure(options_frame, button_frames)
         has_green, has_red = self.has_result_colors(button_frames)
         is_result_colors = has_green or has_red
 

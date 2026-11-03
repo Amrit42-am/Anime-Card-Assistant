@@ -72,3 +72,4 @@ def test_manifest_incompatible_embeddings_dimension(tmp_path):
     is_ok, msg = manager.verify_manifest()
     assert is_ok is False
     assert "missing" in msg.lower()
+

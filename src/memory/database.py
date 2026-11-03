@@ -6,11 +6,12 @@ Stores metadata, confirmation status, and paths for all user-confirmed
 and corrected blurred card examples.
 """
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 import logging
 from pathlib import Path
 import sqlite3
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Generator
 
 logger = logging.getLogger("memory_database")
 
@@ -44,10 +45,14 @@ class MemoryDatabase:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
 
-    def _get_connection(self) -> sqlite3.Connection:
+    @contextmanager
+    def _get_connection(self) -> Generator[sqlite3.Connection, None, None]:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     def _init_schema(self):
         with self._get_connection() as conn:
