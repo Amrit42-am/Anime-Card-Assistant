@@ -472,3 +472,4 @@ def test_state_machine_transitions_all_phases():
     e5 = detector.process_frame_bundle(active_bundle)
     assert e5.question_detected is True
     assert detector.current_state == "ACTIVE_QUESTION"
+

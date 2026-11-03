@@ -231,3 +231,4 @@ class ResultDetector:
             banner_text=banner_text,
             timestamp=timestamp
         )
+

@@ -200,3 +200,4 @@ class AutomaticSampleCollector:
             status=verification_status,
             message=msg
         )
+
