@@ -61,6 +61,7 @@ class CalibrationConfig:
         card_region: Optional[RelativeRegion] = None,
         options_region: Optional[RelativeRegion] = None,
         timer_region: Optional[RelativeRegion] = None,
+        banner_region: Optional[RelativeRegion] = None,
         retina_scale: float = 2.0,
     ):
         # Default fallback window: left half of standard 1440x900 / 1920x1080 display
@@ -68,10 +69,12 @@ class CalibrationConfig:
         # Defaults based on standard Roblox Guess the Card UI
         # Card artwork occupies central-left area
         self.card_relative = card_region or RelativeRegion(rx=0.08, ry=0.22, rw=0.45, rh=0.68)
-        # 4 options occupy right side
-        self.options_relative = options_region or RelativeRegion(rx=0.55, ry=0.25, rw=0.40, rh=0.65)
-        # Timer / question banner at top
+        # 4 options occupy right side in a 2x2 grid (excluding the banner above)
+        self.options_relative = options_region or RelativeRegion(rx=0.55, ry=0.28, rw=0.40, rh=0.62)
+        # Timer bar at top of game
         self.timer_relative = timer_region or RelativeRegion(rx=0.30, ry=0.08, rw=0.40, rh=0.12)
+        # Result / Instruction banner directly above the answer buttons
+        self.banner_relative = banner_region or RelativeRegion(rx=0.55, ry=0.18, rw=0.40, rh=0.08)
         self.retina_scale = retina_scale
 
     def get_absolute_card_region(self) -> RectRegion:
@@ -83,21 +86,32 @@ class CalibrationConfig:
     def get_absolute_timer_region(self) -> RectRegion:
         return self.timer_relative.to_absolute(self.game_window)
 
+    def get_absolute_banner_region(self) -> RectRegion:
+        return self.banner_relative.to_absolute(self.game_window)
+
     def get_option_button_regions(self) -> list[RectRegion]:
-        """Divides the options area into 4 vertical button slots."""
+        """
+        Divides the options area into a 2x2 grid of four independent quadrant crops:
+        1. Top-left
+        2. Top-right
+        3. Bottom-left
+        4. Bottom-right
+        """
         opts = self.get_absolute_options_region()
-        btn_h = int(opts.h / 4)
-        buttons = []
-        for i in range(4):
-            y_start = opts.y + i * btn_h
-            # Add small padding between buttons
-            buttons.append(RectRegion(
-                x=opts.x + 4,
-                y=y_start + 4,
-                w=opts.w - 8,
-                h=btn_h - 8
-            ))
-        return buttons
+        half_w = opts.w // 2
+        half_h = opts.h // 2
+        pad = 4
+
+        return [
+            # 1. Top-Left
+            RectRegion(x=opts.x + pad, y=opts.y + pad, w=half_w - pad * 2, h=half_h - pad * 2),
+            # 2. Top-Right
+            RectRegion(x=opts.x + half_w + pad, y=opts.y + pad, w=opts.w - half_w - pad * 2, h=half_h - pad * 2),
+            # 3. Bottom-Left
+            RectRegion(x=opts.x + pad, y=opts.y + half_h + pad, w=half_w - pad * 2, h=opts.h - half_h - pad * 2),
+            # 4. Bottom-Right
+            RectRegion(x=opts.x + half_w + pad, y=opts.y + half_h + pad, w=opts.w - half_w - pad * 2, h=opts.h - half_h - pad * 2),
+        ]
 
     def save(self, path: Path = DEFAULT_CALIBRATION_PATH):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -106,6 +120,7 @@ class CalibrationConfig:
             "card_relative": asdict(self.card_relative),
             "options_relative": asdict(self.options_relative),
             "timer_relative": asdict(self.timer_relative),
+            "banner_relative": asdict(self.banner_relative),
             "retina_scale": self.retina_scale
         }
         with open(path, "w", encoding="utf-8") as f:
@@ -123,11 +138,17 @@ class CalibrationConfig:
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            banner_rel = (
+                RelativeRegion(**data["banner_relative"])
+                if "banner_relative" in data
+                else None
+            )
             return cls(
                 game_window=RectRegion.from_dict(data["game_window"]),
                 card_region=RelativeRegion(**data["card_relative"]),
                 options_region=RelativeRegion(**data["options_relative"]),
                 timer_region=RelativeRegion(**data["timer_relative"]),
+                banner_region=banner_rel,
                 retina_scale=data.get("retina_scale", 2.0)
             )
         except Exception as e:

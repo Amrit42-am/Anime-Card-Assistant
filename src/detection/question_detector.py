@@ -31,6 +31,7 @@ class QuestionEvent:
     options_frame: Optional[np.ndarray] = None
     button_frames: Optional[List[np.ndarray]] = None
     timer_frame: Optional[np.ndarray] = None
+    banner_frame: Optional[np.ndarray] = None
 
 
 class QuestionDetector:
@@ -137,6 +138,7 @@ class QuestionDetector:
         options_frame = bundle.get("options_frame")
         button_frames = bundle.get("button_frames")
         timer_frame = bundle.get("timer_frame")
+        banner_frame = bundle.get("banner_frame")
 
         if card_frame is None or options_frame is None or not self.has_card_content(card_frame):
             if self.current_state != "IDLE":
@@ -148,7 +150,8 @@ class QuestionDetector:
                 timestamp=now,
                 card_hash="",
                 card_sharpness=0.0,
-                change_delta=0.0
+                change_delta=0.0,
+                banner_frame=banner_frame
             )
 
         card_gray = cv2.cvtColor(card_frame, cv2.COLOR_BGR2GRAY) if card_frame.ndim == 3 else card_frame
@@ -190,11 +193,15 @@ class QuestionDetector:
                 self.current_state = "ANSWER_RECOGNITION"
 
         elif self.current_state == "RESULT_REVEALED":
-            # Screen transition away from result screen
+            # Screen transition away from result screen or timeout safeguard
             if not is_result_colors and (not has_buttons or delta > self.min_change_threshold):
                 self._transition("NEXT_QUESTION", now)
                 self.active_question_hash = None
                 logger.info("Detector State: NEXT_QUESTION (Round ended, awaiting next)")
+            elif now - self.last_state_change_time > 6.0:
+                self._transition("NEXT_QUESTION", now)
+                self.active_question_hash = None
+                logger.info("Detector State: NEXT_QUESTION (Result reveal timeout after 6.0s)")
 
         return QuestionEvent(
             question_detected=new_question_triggered,
@@ -207,7 +214,8 @@ class QuestionDetector:
             card_frame=card_frame,
             options_frame=options_frame,
             button_frames=button_frames,
-            timer_frame=timer_frame
+            timer_frame=timer_frame,
+            banner_frame=banner_frame
         )
 
     def _transition(self, new_state: str, timestamp: float):

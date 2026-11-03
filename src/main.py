@@ -71,9 +71,19 @@ def main():
         pipeline = QuizPipeline(encoder_name=args.model)
         try:
             while True:
-                res = pipeline.step()
-                if res and res.status == "matched":
-                    print(f"\n>>> RECOGNIZED CARD: {res.card_name} ({res.confidence*100:.1f}%) in {res.processing_time_ms} ms")
+                ans, rep = pipeline.step()
+                if ans is not None:
+                    if ans.status == "matched":
+                        print(f"\n>>> RECOGNIZED CARD: {ans.card_name} ({ans.confidence*100:.1f}%) in {ans.processing_time_ms:.1f} ms [Margin: +{ans.margin:.2f}]")
+                    else:
+                        print(f"\n>>> UNCERTAIN PREDICTION: {ans.card_name} ({ans.confidence*100:.1f}%) in {ans.processing_time_ms:.1f} ms")
+
+                if rep is not None:
+                    if rep.verified:
+                        print(f"\n[AUTO-LEARNED] Confirmed: {rep.card_name} (Sample ID: {rep.sample_id})")
+                    else:
+                        print(f"\n[AUTO-LEARN NOTICE] {rep.message} (Status: {rep.status})")
+
                 time.sleep(1.0 / args.fps)
         except KeyboardInterrupt:
             logger.info("Headless pipeline stopped.")

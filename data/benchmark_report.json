@@ -1,19 +1,40 @@
 {
-  "timestamp": "2026-11-01T00:47:55Z",
+  "timestamp": "2026-11-03T21:03:36Z",
   "model": "dinov2",
-  "cards_evaluated": 60,
-  "total_questions": 300,
-  "top1_accuracy_percent": 100.0,
-  "top2_accuracy_percent": 100.0,
-  "avg_latency_ms": 67.6,
-  "p95_latency_ms": 73.26,
-  "per_blur_accuracy": {
-    "blur_light": 100.0,
-    "blur_medium": 100.0,
-    "blur_heavy": 100.0,
-    "blur_box": 100.0,
-    "blur_compound": 100.0
+  "data_leakage_prevented": true,
+  "synthetic_images": {
+    "total_evaluations": 120,
+    "top1_accuracy_percent": 98.33,
+    "top2_accuracy_percent": 100.0,
+    "avg_latency_ms": 49.36,
+    "p95_latency_ms": 57.65,
+    "per_distortion_breakdown": {
+      "gaussian_jitter": 100.0,
+      "box_jitter": 100.0,
+      "motion_blur": 100.0,
+      "compound_noise": 93.33
+    }
   },
-  "meets_accuracy_goal": true,
-  "meets_latency_goal": true
+  "real_roblox_blur_images": {
+    "available_samples": 3,
+    "accuracy_percent": 100.0,
+    "correct_matches": 3
+  },
+  "previously_learned_images": {
+    "total_samples_evaluated": 0,
+    "retrieved_from_memory_percent": 0.0,
+    "top1_accuracy_percent": 0.0
+  },
+  "previously_unseen_cards": {
+    "held_out_cases_tested": 15,
+    "correctly_flagged_uncertain_percent": 100.0,
+    "note": "Evaluates confidence calibration when true card is absent from candidate pool."
+  },
+  "summary": {
+    "synthetic_top1_percent": 98.33,
+    "avg_latency_ms": 49.36,
+    "p95_latency_ms": 57.65,
+    "real_samples_count": 3,
+    "disclaimer": "Metrics are measured independently. Real-game accuracy reflects verified gameplay samples only."
+  }
 }

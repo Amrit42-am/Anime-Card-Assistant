@@ -105,19 +105,28 @@ class ScreenCapture:
         ox2 = min(gw, int((opts_rel.rx + opts_rel.rw) * gw))
         options_frame = game_frame[oy1:oy2, ox1:ox2]
 
-        # Slice individual 4 option buttons
+        # Slice individual 4 option buttons in 2x2 grid:
+        # 1. Top-Left, 2. Top-Right, 3. Bottom-Left, 4. Bottom-Right
         button_frames: List[np.ndarray] = []
         if options_frame.shape[0] > 20 and options_frame.shape[1] > 20:
             oh, ow = options_frame.shape[:2]
-            slot_h = oh // 4
-            for i in range(4):
-                by1 = i * slot_h
-                by2 = (i + 1) * slot_h if i < 3 else oh
-                # small inner padding to crop inside button borders
-                btn_crop = options_frame[by1 + 2:by2 - 2, 4:ow - 4]
-                button_frames.append(btn_crop)
+            half_h = oh // 2
+            half_w = ow // 2
+            pad_x = 4
+            pad_y = 4
 
-        # Slice timer/header
+            # 1. Top-Left
+            tl = options_frame[pad_y:half_h - pad_y, pad_x:half_w - pad_x]
+            # 2. Top-Right
+            tr = options_frame[pad_y:half_h - pad_y, half_w + pad_x:ow - pad_x]
+            # 3. Bottom-Left
+            bl = options_frame[half_h + pad_y:oh - pad_y, pad_x:half_w - pad_x]
+            # 4. Bottom-Right
+            br = options_frame[half_h + pad_y:oh - pad_y, half_w + pad_x:ow - pad_x]
+
+            button_frames = [tl, tr, bl, br]
+
+        # Slice timer / countdown region at top
         tim_rel = cfg.timer_relative
         ty1 = max(0, int(tim_rel.ry * gh))
         ty2 = min(gh, int((tim_rel.ry + tim_rel.rh) * gh))
@@ -125,12 +134,24 @@ class ScreenCapture:
         tx2 = min(gw, int((tim_rel.rx + tim_rel.rw) * gw))
         timer_frame = game_frame[ty1:ty2, tx1:tx2]
 
+        # Slice dedicated result / instruction banner region above options
+        banner_rel = getattr(cfg, "banner_relative", None)
+        if banner_rel is not None:
+            by1 = max(0, int(banner_rel.ry * gh))
+            by2 = min(gh, int((banner_rel.ry + banner_rel.rh) * gh))
+            bx1 = max(0, int(banner_rel.rx * gw))
+            bx2 = min(gw, int((banner_rel.rx + banner_rel.rw) * gw))
+            banner_frame = game_frame[by1:by2, bx1:bx2]
+        else:
+            banner_frame = None
+
         return {
             "game_frame": game_frame,
             "card_frame": card_frame,
             "options_frame": options_frame,
             "button_frames": button_frames,
             "timer_frame": timer_frame,
+            "banner_frame": banner_frame,
             "game_rect": game_rect,
         }
 

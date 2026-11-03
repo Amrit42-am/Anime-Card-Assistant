@@ -77,6 +77,25 @@ class OptionReader:
         enhanced = clahe.apply(gray)
         return enhanced
 
+    def retry_preprocess_button_image(self, img: np.ndarray) -> np.ndarray:
+        """
+        Alternative aggressive preprocessing for degraded or difficult button text:
+        Upscaling (2.5x), higher contrast CLAHE (3.5), and Otsu thresholding.
+        """
+        if img is None or img.size == 0:
+            return img
+
+        h, w = img.shape[:2]
+        scale = 2.5
+        resized = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_LANCZOS4)
+        gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY) if resized.ndim == 3 else resized.copy()
+
+        clahe = cv2.createCLAHE(clipLimit=3.5, tileGridSize=(6, 6))
+        contrast = clahe.apply(gray)
+        blur = cv2.GaussianBlur(contrast, (3, 3), 0)
+        _, thresh = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        return thresh
+
     def extract_text_vision(self, image: np.ndarray) -> List[Tuple[str, float, float]]:
         """
         Invokes Apple Vision framework on in-memory image.
@@ -151,14 +170,22 @@ class OptionReader:
 
         return clean, None, float(best[1]) if best else 0.0
 
-    def read_options_from_buttons(self, button_frames: List[np.ndarray]) -> List[CandidateOption]:
+    def read_options_from_buttons(
+        self,
+        button_frames: List[np.ndarray],
+        use_retry: bool = False
+    ) -> List[CandidateOption]:
         """
         Reads candidate names from 4 pre-sliced button images.
         """
         candidates: List[CandidateOption] = []
 
         for i, btn in enumerate(button_frames):
-            preprocessed = self.preprocess_button_image(btn)
+            preprocessed = (
+                self.retry_preprocess_button_image(btn)
+                if use_retry
+                else self.preprocess_button_image(btn)
+            )
             vision_results = self.extract_text_vision(preprocessed)
 
             if vision_results:

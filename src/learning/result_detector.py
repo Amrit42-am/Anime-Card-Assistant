@@ -86,54 +86,88 @@ def get_color_ratios(button_img: np.ndarray) -> Tuple[float, float]:
 def get_correct_option(
     button_frames: List[np.ndarray],
     option_reader: OptionReader,
-    min_green_ratio: float = 0.18
+    min_green_ratio: float = 0.18,
+    min_ocr_confidence: float = 0.35,
+    min_fuzzy_score: float = 80.0,
+    candidate_names: Optional[List[str]] = None
 ) -> Optional[CorrectOptionResult]:
     """
-    Identifies the green correct-answer button among the 4 choices and reads its text.
-    Returns CorrectOptionResult or None if no green button is present.
+    Identifies the unambiguous green correct-answer button among 4 valid button crops,
+    verifies appropriate OCR confidence and strict fuzzy-match score, and confirms
+    the card belongs to the active options.
     """
-    if not button_frames or len(button_frames) < 2:
+    # 1. Require four valid button crops
+    if not button_frames or len(button_frames) != 4:
         return None
 
-    best_slot = -1
-    highest_green = 0.0
+    for btn in button_frames:
+        if btn is None or btn.size == 0 or btn.shape[0] < 15 or btn.shape[1] < 15:
+            return None
 
+    # 2. Identify one unambiguous green button
+    qualifying_green: List[Tuple[int, float]] = []
     for idx, btn in enumerate(button_frames):
         green_ratio, red_ratio = get_color_ratios(btn)
-        # Button must have dominant green and not be confused with red
-        if green_ratio > min_green_ratio and green_ratio > red_ratio and green_ratio > highest_green:
-            highest_green = green_ratio
-            best_slot = idx
+        if green_ratio > min_green_ratio and green_ratio > red_ratio:
+            qualifying_green.append((idx, green_ratio))
 
-    if best_slot == -1:
+    if len(qualifying_green) == 0:
         return None
+    elif len(qualifying_green) > 1:
+        # Require unambiguous dominance
+        qualifying_green.sort(key=lambda x: x[1], reverse=True)
+        top_slot, top_gr = qualifying_green[0]
+        second_slot, second_gr = qualifying_green[1]
+        if top_gr < 1.8 * second_gr or second_gr >= 0.25:
+            logger.warning("Ambiguous green buttons detected: %s. Refusing ambiguous answer.", qualifying_green)
+            return None
+        best_slot, highest_green = top_slot, top_gr
+    else:
+        best_slot, highest_green = qualifying_green[0]
 
-    # OCR the text inside the green button
+    # 3. OCR the text inside the green button
     green_frame = button_frames[best_slot]
     preprocessed = option_reader.preprocess_button_image(green_frame)
     vision_results = option_reader.extract_text_vision(preprocessed)
 
-    if vision_results:
-        vision_results.sort(key=lambda item: item[2])
-        raw_text = " ".join([t[0] for t in vision_results])
-        avg_conf = float(np.mean([t[1] for t in vision_results]))
-    else:
-        raw_text = ""
-        avg_conf = 0.0
+    if not vision_results:
+        return None
 
+    vision_results.sort(key=lambda item: item[2])
+    raw_text = " ".join([t[0] for t in vision_results]).strip()
+    avg_conf = float(np.mean([t[1] for t in vision_results]))
+
+    if len(raw_text) < 3 or avg_conf < min_ocr_confidence:
+        logger.debug("Green button OCR below confidence threshold (conf=%.2f, text='%s')", avg_conf, raw_text)
+        return None
+
+    # 4. Strict canonical-name resolution
     canonical_name, card_id, fuzzy_score = option_reader.resolve_canonical_name(raw_text)
-    is_verified = (card_id is not None) and (fuzzy_score >= 65.0)
+    is_verified = (card_id is not None) and (fuzzy_score >= min_fuzzy_score)
 
-    logger.info("Found green correct button at slot %d: '%s' (Canonical: %s, ID: %s, Green: %.2f)",
+    if not is_verified:
+        logger.debug("Green button text '%s' resolved to '%s' (fuzzy=%.1f) but below strict threshold %.1f",
+                     raw_text, canonical_name, fuzzy_score, min_fuzzy_score)
+        return None
+
+    # 5. Verify the detected card belongs to the active options if provided
+    if candidate_names:
+        norm_cands = [c.lower().strip() for c in candidate_names]
+        if canonical_name.lower().strip() not in norm_cands:
+            logger.warning("Green button card '%s' (#%d) does not belong to active options %s",
+                           canonical_name, card_id, candidate_names)
+            return None
+
+    logger.info("Found unambiguous green correct button at slot %d: '%s' (Canonical: %s, ID: %s, Green: %.2f)",
                 best_slot, raw_text, canonical_name, card_id, highest_green)
 
     return CorrectOptionResult(
-        correct_option=canonical_name if is_verified else raw_text,
+        correct_option=canonical_name,
         card_id=card_id,
         slot_index=best_slot,
         confidence=round(avg_conf, 4),
         source="green_button_ocr",
-        verified=is_verified,
+        verified=True,
         raw_text=raw_text,
         green_ratio=round(highest_green, 4)
     )
@@ -149,23 +183,28 @@ class ResultDetector:
         self,
         option_reader: OptionReader,
         sharpness_threshold: float = 120.0,
-        min_button_color_ratio: float = 0.18
+        min_button_color_ratio: float = 0.18,
+        min_fuzzy_score: float = 80.0
     ):
         self.option_reader = option_reader
         self.sharpness_threshold = sharpness_threshold
         self.min_button_color_ratio = min_button_color_ratio
+        self.min_fuzzy_score = min_fuzzy_score
 
     def evaluate_screen(
         self,
         card_frame: Optional[np.ndarray],
         button_frames: Optional[List[np.ndarray]],
-        options_frame: Optional[np.ndarray],
-        timer_frame: Optional[np.ndarray],
-        timestamp: float
+        options_frame: Optional[np.ndarray] = None,
+        timer_frame: Optional[np.ndarray] = None,
+        banner_frame: Optional[np.ndarray] = None,
+        candidate_names: Optional[List[str]] = None,
+        timestamp: float = 0.0
     ) -> ResultDetectionEvent:
         """
         Evaluates current screen to determine if the quiz is in
         ACTIVE_QUESTION, RESULT_REVEALED, TRANSITION, or IDLE phase.
+        Uses independent result banner region rather than timer frame for banner text.
         """
         if card_frame is None or card_frame.size == 0 or not button_frames:
             return ResultDetectionEvent(
@@ -186,7 +225,13 @@ class ResultDetector:
         is_unblurred = sharpness >= self.sharpness_threshold
 
         # 2. Check for Green (correct) and Red (wrong) buttons
-        correct_result = get_correct_option(button_frames, self.option_reader, self.min_button_color_ratio)
+        correct_result = get_correct_option(
+            button_frames=button_frames,
+            option_reader=self.option_reader,
+            min_green_ratio=self.min_button_color_ratio,
+            min_fuzzy_score=self.min_fuzzy_score,
+            candidate_names=candidate_names
+        )
 
         wrong_slot = None
         highest_red = 0.0
@@ -198,10 +243,11 @@ class ResultDetector:
                     highest_red = red_r
                     wrong_slot = idx
 
-        # 3. Check for Result Banner OCR text if timer frame is provided
+        # 3. Check for Result Banner OCR text (prioritize dedicated banner_frame)
         banner_text = ""
-        if timer_frame is not None and timer_frame.size > 0:
-            banner_results = self.option_reader.extract_text_vision(timer_frame)
+        target_banner = banner_frame if (banner_frame is not None and banner_frame.size > 0) else timer_frame
+        if target_banner is not None and target_banner.size > 0:
+            banner_results = self.option_reader.extract_text_vision(target_banner)
             if banner_results:
                 banner_text = " ".join([b[0] for b in banner_results]).lower()
 

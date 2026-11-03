@@ -23,8 +23,8 @@ def pipeline():
 
 
 def create_mock_quiz_frame(card_name: str, options: list[str]) -> dict:
-    """Creates a mock game frame bundle with blurred card artwork and 4 option buttons."""
-    # 1. Base card image: let's load a real card artwork from assets
+    """Creates a mock game frame bundle with blurred card artwork and 4 2x2 option buttons."""
+    # 1. Base card image: load a real card artwork from assets
     card_path = "assets/cards/card_137_green-bomber.png"
     real_img = cv2.imread(card_path)
     if real_img is None:
@@ -33,17 +33,19 @@ def create_mock_quiz_frame(card_name: str, options: list[str]) -> dict:
     # Apply heavy blur
     blurred_card = cv2.GaussianBlur(real_img, (35, 35), 12.0)
 
-    # 2. Options frame with 4 buttons
+    # 2. 2x2 Options frame with 4 buttons: TL, TR, BL, BR
     btn_frames = []
-    opt_h = 240
-    opt_w = 260
-    options_frame = np.ones((opt_h, opt_w, 3), dtype=np.uint8) * 20
+    btn_h = 60
+    btn_w = 140
 
     for i, name in enumerate(options):
-        btn = np.ones((56, opt_w - 8, 3), dtype=np.uint8) * 40
-        cv2.putText(btn, name, (10, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        btn = np.ones((btn_h, btn_w, 3), dtype=np.uint8) * 40
+        cv2.putText(btn, name, (8, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
         btn_frames.append(btn)
-        options_frame[i * 60 + 2:(i + 1) * 60 - 2, 4:opt_w - 4] = btn
+
+    top_row = np.hstack([btn_frames[0], btn_frames[1]])
+    bottom_row = np.hstack([btn_frames[2], btn_frames[3]])
+    options_frame = np.vstack([top_row, bottom_row])
 
     # Game frame mock
     game_frame = np.ones((500, 700, 3), dtype=np.uint8) * 30

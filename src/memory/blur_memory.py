@@ -313,3 +313,28 @@ class BlurMemorySystem:
     def total_samples(self) -> int:
         return len(self.sample_ids)
 
+    def record_disagreement(
+        self,
+        session_id: str,
+        green_card_id: int,
+        green_card_name: str,
+        clear_matched_id: int,
+        clear_matched_name: str,
+        clear_confidence: float = 0.0,
+        options: Optional[List[str]] = None,
+        notes: str = ""
+    ) -> int:
+        """Preserves disagreement records separately for debugging without polluting confirmed memory."""
+        import json
+        opt_json = json.dumps(options) if options else None
+        return self.db.log_disagreement(
+            session_id=session_id,
+            green_card_id=green_card_id,
+            green_card_name=green_card_name,
+            clear_matched_id=clear_matched_id,
+            clear_matched_name=clear_matched_name,
+            clear_confidence=clear_confidence,
+            options_json=opt_json,
+            notes=notes
+        )
+

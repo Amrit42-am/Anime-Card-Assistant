@@ -90,6 +90,23 @@ class MemoryDatabase:
             cur.execute("CREATE INDEX IF NOT EXISTS idx_blur_card_id ON learned_blurs (card_id);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_blur_confirmed ON learned_blurs (is_confirmed);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_blur_hash ON learned_blurs (blur_hash);")
+
+            # Dedicated separate table for disagreement cases to preserve debugging records
+            # without contaminating active confirmed recognition memory
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS disagreement_logs (
+                log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                green_card_id INTEGER,
+                green_card_name TEXT,
+                clear_matched_id INTEGER,
+                clear_matched_name TEXT,
+                clear_confidence REAL,
+                options_json TEXT,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """)
             conn.commit()
 
     def insert_sample(
@@ -197,4 +214,38 @@ class MemoryDatabase:
             cur = conn.cursor()
             cur.execute("SELECT COUNT(*) FROM learned_blurs WHERE is_confirmed = 1;")
             return cur.fetchone()[0]
+
+    def log_disagreement(
+        self,
+        session_id: str,
+        green_card_id: int,
+        green_card_name: str,
+        clear_matched_id: int,
+        clear_matched_name: str,
+        clear_confidence: float = 0.0,
+        options_json: Optional[str] = None,
+        notes: str = ""
+    ) -> int:
+        """Stores a separate unverified disagreement record for debugging."""
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+            INSERT INTO disagreement_logs (
+                session_id, green_card_id, green_card_name,
+                clear_matched_id, clear_matched_name, clear_confidence,
+                options_json, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                session_id, green_card_id, green_card_name,
+                clear_matched_id, clear_matched_name, clear_confidence,
+                options_json, notes
+            ))
+            conn.commit()
+            return cur.lastrowid
+
+    def get_all_disagreements(self) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM disagreement_logs ORDER BY log_id DESC;")
+            return [dict(r) for r in cur.fetchall()]
 

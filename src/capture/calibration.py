@@ -209,18 +209,34 @@ class CalibrationDialog(QDialog):
         cv2.rectangle(frame, (cx, cy), (cx + cw, cy + ch), (0, 255, 0), 2)
         cv2.putText(frame, "Card Artwork", (cx + 5, cy + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-        # Draw Options Region in Orange/Yellow
+        # Draw Options Region in Orange/Yellow (2x2 Grid)
         ox = int(self.spin_ox.value() * gw)
         oy = int(self.spin_oy.value() * gh)
         ow = int(self.spin_ow.value() * gw)
         oh = int(self.spin_oh.value() * gh)
         cv2.rectangle(frame, (ox, oy), (ox + ow, oy + oh), (0, 165, 255), 2)
-        cv2.putText(frame, "4 Answer Options", (ox + 5, oy + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
 
-        # Draw 4 button division guides inside options
-        slot_h = oh // 4
-        for i in range(1, 4):
-            cv2.line(frame, (ox, oy + i * slot_h), (ox + ow, oy + i * slot_h), (0, 140, 220), 1)
+        # Draw 2x2 quadrant division guides inside options
+        half_w = ow // 2
+        half_h = oh // 2
+        cv2.line(frame, (ox, oy + half_h), (ox + ow, oy + half_h), (0, 140, 220), 1)
+        cv2.line(frame, (ox + half_w, oy), (ox + half_w, oy + oh), (0, 140, 220), 1)
+
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        cv2.putText(frame, "1: TL", (ox + 5, oy + 18), font, 0.45, (0, 200, 255), 1)
+        cv2.putText(frame, "2: TR", (ox + half_w + 5, oy + 18), font, 0.45, (0, 200, 255), 1)
+        cv2.putText(frame, "3: BL", (ox + 5, oy + half_h + 18), font, 0.45, (0, 200, 255), 1)
+        cv2.putText(frame, "4: BR", (ox + half_w + 5, oy + half_h + 18), font, 0.45, (0, 200, 255), 1)
+
+        # Draw Result Banner above options
+        banner_rel = getattr(self.config, "banner_relative", None)
+        if banner_rel is not None:
+            bx = int(banner_rel.rx * gw)
+            by = int(banner_rel.ry * gh)
+            bw = int(banner_rel.rw * gw)
+            bh = int(banner_rel.rh * gh)
+            cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), (255, 255, 0), 1)
+            cv2.putText(frame, "Result Banner", (bx + 5, by + 15), font, 0.45, (255, 255, 0), 1)
 
         # Convert to QPixmap for display
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)

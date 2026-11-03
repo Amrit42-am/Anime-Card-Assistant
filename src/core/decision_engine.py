@@ -90,33 +90,66 @@ class AnswerDecisionEngine:
                 processing_time_ms=0.0
             )
 
-        # 1. OCR Extraction
+        # 1. OCR Extraction (Prefer 4 distinct and correctly resolved option IDs)
         ocr_candidates: List[CandidateOption] = []
         if button_frames and len(button_frames) == 4:
-            ocr_candidates = self.option_reader.read_options_from_buttons(button_frames)
+            ocr_candidates = self.option_reader.read_options_from_buttons(button_frames, use_retry=False)
+
+            # Check distinct resolved cards
+            distinct_cids = {c.card_id for c in ocr_candidates if c.is_valid and c.card_id is not None}
+            if len(distinct_cids) < 4:
+                logger.info("Only %d/4 distinct candidates resolved. Retrying preprocessing and OCR...", len(distinct_cids))
+                # Step 1 & 2: Retry preprocessing & OCR on button crops
+                retry_candidates = self.option_reader.read_options_from_buttons(button_frames, use_retry=True)
+                for i in range(4):
+                    if not ocr_candidates[i].is_valid and retry_candidates[i].is_valid:
+                        logger.info("OCR Retry successfully recovered slot %d: '%s'", i, retry_candidates[i].canonical_name)
+                        ocr_candidates[i] = retry_candidates[i]
+
         elif options_frame is not None and options_frame.size > 0:
             ocr_candidates = self.option_reader.read_options_from_panel(options_frame)
 
-        valid_candidate_names = [c.canonical_name for c in ocr_candidates if c.is_valid]
-        logger.info("OCR extracted %d valid candidate names: %s", len(valid_candidate_names), valid_candidate_names)
+        # Unique valid candidates preserving order
+        seen_ids = set()
+        valid_candidates: List[str] = []
+        for c in ocr_candidates:
+            if c.is_valid and c.card_id is not None and c.card_id not in seen_ids:
+                seen_ids.add(c.card_id)
+                valid_candidates.append(c.canonical_name)
+
+        logger.info("OCR extracted %d distinct valid candidate cards: %s", len(valid_candidates), valid_candidates)
 
         # 2. Visual Embedding Extraction
         query_embedding = self.encoder.encode_image(card_frame)
 
-        # 3. Candidate Matching
-        if len(valid_candidate_names) >= 2:
+        # 3. Candidate Matching with Controlled Fallback
+        if len(valid_candidates) >= 4:
+            # Ideal: 4 distinct candidate options
             match_res = self.matcher.match_candidates(
                 query_embedding=query_embedding,
-                candidate_names=valid_candidate_names,
+                candidate_names=valid_candidates,
                 learned_memory=self.memory
             )
+        elif len(valid_candidates) == 3:
+            # 3 options resolved: match among the 3 candidates with controlled validation
+            match_res = self.matcher.match_candidates(
+                query_embedding=query_embedding,
+                candidate_names=valid_candidates,
+                learned_memory=self.memory
+            )
+            # Slight confidence penalty for 1 missing candidate
+            match_res["confidence"] = round(match_res["confidence"] * 0.92, 4)
         else:
-            logger.warning("Fewer than 2 candidates from OCR, executing full database search fallback.")
+            # Insufficient candidates (<3): controlled fallback matching across all cards
+            logger.warning("Fewer than 3 candidates from OCR (%d found). Running controlled full database search fallback.", len(valid_candidates))
             match_res = self.matcher.match_all(
                 query_embedding=query_embedding,
                 top_k=4,
                 learned_memory=self.memory
             )
+            # Return uncertainty when evidence is insufficient
+            if match_res["confidence"] < 0.85 or match_res["margin"] < 0.12:
+                match_res["status"] = "uncertain"
 
         elapsed_ms = (time.time() - t0) * 1000.0
         conf_report = match_res.get("confidence_report")

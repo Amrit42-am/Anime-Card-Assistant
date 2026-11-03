@@ -114,7 +114,7 @@ class ImageMatcher:
                     source="learned_memory"
                 )
                 return {
-                    "status": "matched",
+                    "status": "matched" if report.is_confident else "uncertain",
                     "card_name": self.card_names[idx],
                     "card_id": int(self.card_ids[idx]),
                     "confidence": report.calibrated_confidence,
@@ -201,7 +201,7 @@ class ImageMatcher:
                     source="learned_memory"
                 )
                 return {
-                    "status": "matched",
+                    "status": "matched" if report.is_confident else "uncertain",
                     "card_name": self.card_names[idx],
                     "card_id": int(self.card_ids[idx]),
                     "confidence": report.calibrated_confidence,

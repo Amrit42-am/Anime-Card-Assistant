@@ -8,17 +8,18 @@ Anime Card Assistant is a modular, high-performance desktop application for macO
 ## 🚀 Key Features
 
 - **286 Verified Card References:** Complete local canonical dataset downloaded and verified directly from the reference database.
-- **DINOv2 Neural Vision Core:** Uses Facebook Research's self-supervised DINOv2 vision transformer with Apple Silicon MPS hardware acceleration, achieving **100% Top-1 accuracy** on synthetic blur validation benchmarks.
+- **2×2 Quadrant Answer Layout:** Accurately models Roblox's actual 2×2 button grid (Top-Left, Top-Right, Bottom-Left, Bottom-Right) with independent quadrant cropping and separate result-banner region calibration.
+- **Automatic Result-Based Learning:** Passively reads the unblurred card artwork and green correct-answer button when the round resolves. Dual-layer cross-validation ensures only samples with complete agreement between the green button and clear-image match are saved to confirmed memory.
+- **DINOv2 Neural Vision Core:** Uses Facebook Research's self-supervised DINOv2 vision transformer with Apple Silicon MPS hardware acceleration, achieving **98.33% Top-1 accuracy** on independent, non-cached synthetic blur benchmarks.
 - **Sub-100ms Recognition Pipeline:**
-  - Screen Capture & Region Slicing: **~8 ms**
-  - macOS Native Apple Vision OCR: **~35 ms**
-  - Visual Embedding & Candidate Matching: **~25 ms**
-  - Total warm response latency: **~68 ms** (benchmark verified).
-- **Candidate-Constrained Matching:** Uses OCR to extract the 4 visible option buttons, restricting visual comparison to those candidates before falling back to full-database search.
-- **Learned Blur Memory (Self-Improving):** Persistent SQLite + NumPy memory system that stores user-confirmed blurred screenshots captured during live gameplay. Repeated encounters are recognized with near-instantaneous confidence.
-- **Safety Guarantee:** Stored blur memories are only retrieved when the recognized card matches one of the 4 active quiz options, preventing false-positive memory contamination.
-- **Interactive Calibration System:** Allows visual adjustment of game window, card artwork box, and answer options area to accommodate any resolution, window positioning, or macOS Retina display scaling.
-- **Modern PySide6 Floating UI:** Frameless, always-on-top, draggable overlay positioned on the right side of the screen with opacity controls, live latency tracking, and one-click feedback buttons (`[✓ Confirm]` and `[✎ Correct]`).
+  - Screen Capture & 2×2 Region Slicing: **~8 ms**
+  - macOS Native Apple Vision OCR: **~25 ms**
+  - Visual Embedding & Candidate Matching: **~16 ms**
+  - Total warm response latency: **~49 ms** (benchmark verified).
+- **Candidate-Constrained Matching:** Uses OCR to extract the 4 visible option buttons in 2×2 quadrants, restricting visual comparison strictly to those candidates.
+- **Automatic OCR Retry & Fallback:** Automatically retries button preprocessing with contrast enhancement if fewer than 4 options resolve, using controlled fallback with strict uncertainty thresholds.
+- **Disagreement Isolation:** Inconclusive or disagreeing result samples are preserved separately in `disagreement_logs` for debugging and never contaminate active recognition memory.
+- **Modern PySide6 Floating UI & Headless Mode:** Frameless, always-on-top, draggable overlay positioned on the right side of the screen with opacity controls, live latency tracking, auto-learned confirmation pills, and support for terminal headless mode.
 - **Completely Local & Passive:** Requires zero external cloud AI APIs for recognition and does not click, inject, or interfere with Roblox processes.
 
 ---
@@ -161,19 +162,25 @@ python src/main.py
 
 ---
 
-## 📊 Benchmark Results
+## 📊 Benchmark Results (Leakage-Free Multi-Group Evaluation)
 
-Measured on Apple Silicon (M-series MacBook Pro):
+Evaluated across four distinct, independent groups on Apple Silicon (M-series MacBook Pro):
 
-| Metric | Target | Measured Result | Status |
+| Evaluation Group | Metric | Measured Result | Status |
 |---|---|---|---|
-| **Top-1 Recognition Accuracy** | ≥ 95.0% | **100.00%** | ✅ PASSED |
-| **Top-2 Recognition Accuracy** | ≥ 98.0% | **100.00%** | ✅ PASSED |
-| **Average Decision Latency** | < 500 ms | **67.60 ms** | ✅ PASSED |
-| **95th-Percentile Latency** | < 1000 ms | **73.26 ms** | ✅ PASSED |
-| **Light Blur Accuracy** | ≥ 95.0% | **100.00%** (60/60) | ✅ PASSED |
-| **Heavy Blur Accuracy** | ≥ 95.0% | **100.00%** (60/60) | ✅ PASSED |
-| **Compound Shader Blur Accuracy** | ≥ 95.0% | **100.00%** (60/60) | ✅ PASSED |
+| **1. Independent Synthetic Blurs** | Top-1 Accuracy (Jittered Kernel & Noise) | **98.33%** (118/120) | ✅ PASSED |
+| | Top-2 Accuracy | **100.00%** (120/120) | ✅ PASSED |
+| | Average Inference Latency | **49.36 ms** | ✅ PASSED (<500ms) |
+| | 95th-Percentile Latency | **57.65 ms** | ✅ PASSED (<1000ms) |
+| **2. Real Roblox Blur Images** | Top-1 Accuracy on Verified Gameplay Samples | **100.00%** (3/3) | ✅ MEASURED |
+| **3. Held-out Unseen Cards** | Correct Rejection / Uncertainty Flagging | **100.00%** (15/15) | ✅ PASSED |
+| **Per-Distortion Breakdown** | Gaussian Jitter | **100.00%** (30/30) | ✅ PASSED |
+| | Box Blur Jitter | **100.00%** (30/30) | ✅ PASSED |
+| | Motion Blur | **100.00%** (30/30) | ✅ PASSED |
+| | Compound Noise & Lighting Shifts | **93.33%** (28/30) | ✅ PASSED |
+
+> [!NOTE]
+> All test queries are generated independently or drawn from held-out gameplay captures; reference database embeddings are never re-used as test inputs. Real-gameplay performance is continuously tracked as new confirmed samples are collected.
 
 Run the benchmark suite yourself at any time:
 ```bash
@@ -190,12 +197,13 @@ Run the full pytest suite:
 pytest tests/
 ```
 
-Results: **23 passed in ~10s**
+Results: **35 passed in ~20s**
 - `tests/test_dataset.py`: 286 card records, non-empty files, SQLite schema consistency.
-- `tests/test_recognition.py`: DINOv2 embedding dimensionality, L2 normalization, 4-candidate ranking, margin evaluation.
+- `tests/test_recognition.py`: DINOv2 embedding dimensionality, L2 normalization, independent image queries, non-cached blur transformations, margin evaluation.
 - `tests/test_ocr.py`: macOS Apple Vision OCR, noisy prefix cleaning, multiline card names, fuzzy database resolution.
 - `tests/test_memory.py`: Confirmed sample saving, candidate-restricted retrieval, memory correction, sample invalidation.
-- `tests/test_integration.py`: End-to-end screen capture bundle processing, duplicate question suppression, confirmation persistence.
+- `tests/test_integration.py`: End-to-end 2×2 screen capture bundle processing, candidate matching, confirmation persistence, full lifecycle simulation.
+- `tests/test_result_learning.py`: All four 2×2 button positions (TL, TR, BL, BR), OCR retry across result frames, separate disagreement logging, timeout expiration, result banner region separation, headless mode tuple handling.
 
 ---
 

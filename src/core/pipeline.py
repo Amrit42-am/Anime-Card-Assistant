@@ -89,6 +89,10 @@ class QuizPipeline:
 
         # 1. State: ACTIVE_QUESTION -> Deliver live prediction immediately
         if event.question_detected:
+            # Safely close or expire any pending session from a previous question
+            if self.sample_collector:
+                self.sample_collector.expire_pending_question("new_question_started")
+
             self.state = "ACTIVE_QUESTION"
             logger.info("Pipeline: New question detected! Commencing sub-100ms candidate analysis...")
 
@@ -125,16 +129,18 @@ class QuizPipeline:
 
             answer_res = result
 
-        # 2. State: RESULT_REVEALED -> Process ground-truth automatic learning
-        elif event.is_result_detected and self.sample_collector:
+        # 2. State: RESULT_REVEALED -> Process ground-truth automatic learning (with retry across subsequent frames)
+        elif (event.is_result_detected or self.detector.current_state == "RESULT_REVEALED") and self.sample_collector and self.sample_collector.pending_question is not None:
             self.state = "RESULT_REVEALED"
-            logger.info("Pipeline: Result revealed! Detecting green button & validating ground truth...")
+            logger.debug("Pipeline: Processing result screen frame...")
 
             res_event: ResultDetectionEvent = self.result_detector.evaluate_screen(
                 card_frame=event.card_frame,
                 button_frames=event.button_frames,
                 options_frame=event.options_frame,
                 timer_frame=event.timer_frame,
+                banner_frame=event.banner_frame,
+                candidate_names=self.sample_collector.pending_question.option_names,
                 timestamp=event.timestamp
             )
 
@@ -145,13 +151,15 @@ class QuizPipeline:
                 timestamp=event.timestamp
             )
 
-            if report:
+            if report is not None:
                 self.last_collection_report = report
                 collection_rep = report
                 self.detector.notify_sample_verified()
-                logger.info("Pipeline auto-learning outcome: %s (Sample ID: %s)", report.message, report.sample_id)
+                logger.info("Pipeline auto-learning outcome: %s (Sample ID: %s, Status: %s)",
+                            report.message, report.sample_id, report.status)
             else:
-                self.detector.notify_sample_verified()
+                # Keep state as RESULT_REVEALED to retry on subsequent result frames
+                logger.debug("Result verification pending; will retry on next frame...")
 
         else:
             self.state = event.state
