@@ -22,6 +22,7 @@ logger = logging.getLogger("option_reader")
 
 try:
     import Vision
+    import pytesseract
     from Foundation import NSData
     VISION_AVAILABLE = True
 except ImportError:
@@ -96,6 +97,35 @@ class OptionReader:
         _, thresh = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         return thresh
 
+
+    def extract_text_fallback(self, image: np.ndarray) -> List[Tuple[str, float, float]]:
+        """Fallback OCR using pytesseract when Vision fails.
+        Returns a list of (text, confidence, dummy_y) where confidence is the average
+        confidence reported by pytesseract (scaled 0-1). The y coordinate is set to 0.0
+        because we cannot obtain it from pytesseract.
+        """
+        if image is None or image.size == 0:
+            return []
+        # Ensure image is 3-channel RGB for pytesseract
+        if image.ndim == 3 and image.shape[2] == 3:
+            rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        elif image.ndim == 2:
+            rgb = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+        else:
+            rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB) if image.ndim == 3 else image
+        try:
+            # Get raw string and confidence data
+            data = pytesseract.image_to_data(rgb, output_type=pytesseract.Output.DICT)
+            texts = []
+            for txt, conf in zip(data.get('text', []), data.get('conf', [])):
+                if txt.strip():
+                    # pytesseract conf is 0-100; normalize to 0-1
+                    confidence = float(conf) / 100.0 if conf != -1 else 0.0
+                    texts.append((txt.strip(), confidence, 0.0))
+            return texts
+        except Exception as e:
+            logger.error("pytesseract OCR failed: %s", e)
+            return []
     def extract_text_vision(self, image: np.ndarray) -> List[Tuple[str, float, float]]:
         """
         Invokes Apple Vision framework on in-memory image.
@@ -187,6 +217,11 @@ class OptionReader:
                 else self.preprocess_button_image(btn)
             )
             vision_results = self.extract_text_vision(preprocessed)
+
+            # Fallback to pytesseract when Vision yields no results or low confidence
+            if not vision_results:
+                vision_results = self.extract_text_fallback(preprocessed)
+
 
             if vision_results:
                 # Sort lines top-to-bottom

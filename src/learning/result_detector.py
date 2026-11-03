@@ -247,7 +247,11 @@ class ResultDetector:
         banner_text = ""
         target_banner = banner_frame if (banner_frame is not None and banner_frame.size > 0) else timer_frame
         if target_banner is not None and target_banner.size > 0:
+            # First try Vision OCR
             banner_results = self.option_reader.extract_text_vision(target_banner)
+            # Fallback to pytesseract if Vision yields no results
+            if not banner_results:
+                banner_results = self.option_reader.extract_text_fallback(target_banner)
             if banner_results:
                 banner_text = " ".join([b[0] for b in banner_results]).lower()
 
