@@ -7,8 +7,13 @@ Supports DINOv2 and MobileNetV3 with Apple Silicon MPS acceleration and CPU fall
 
 from abc import ABC, abstractmethod
 import logging
+import os
 from pathlib import Path
 from typing import Union, List
+
+# Enforce offline mode at runtime
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 import numpy as np
 import torch
@@ -179,6 +184,10 @@ class MobileNetV3Encoder(BaseImageEncoder):
             norm_features = torch.nn.functional.normalize(features, p=2, dim=1)
             matrix = norm_features.cpu().numpy().astype(np.float32)
         return matrix
+
+
+# Convenient alias
+ImageEncoder = DINOv2Encoder
 
 
 def get_image_encoder(name: str = "dinov2", device: str = None) -> BaseImageEncoder:

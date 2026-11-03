@@ -34,6 +34,9 @@ class AnswerResult:
     alternatives: List[Dict[str, Any]]
     explanation: str
     processing_time_ms: float
+    button_slot: Optional[int] = None
+    runner_up_name: Optional[str] = None
+    runner_up_score: Optional[float] = None
     captured_image: Optional[np.ndarray] = None
     query_embedding: Optional[np.ndarray] = None
 
@@ -154,6 +157,19 @@ class AnswerDecisionEngine:
         elapsed_ms = (time.time() - t0) * 1000.0
         conf_report = match_res.get("confidence_report")
 
+        # Determine button slot (0: TL, 1: TR, 2: BL, 3: BR)
+        assigned_slot = None
+        target_name = match_res["card_name"].lower().strip()
+        for cand in ocr_candidates:
+            if cand.canonical_name and cand.canonical_name.lower().strip() == target_name:
+                assigned_slot = cand.slot_index
+                break
+
+        # Extract runner-up name and score
+        alts = match_res.get("alternatives", [])
+        runner_up_name = alts[0]["card_name"] if alts else None
+        runner_up_score = alts[0].get("similarity") if alts else None
+
         return AnswerResult(
             status=match_res.get("status", "uncertain"),
             card_name=match_res["card_name"],
@@ -167,6 +183,9 @@ class AnswerDecisionEngine:
             alternatives=match_res.get("alternatives", []),
             explanation=conf_report.explanation if conf_report else "",
             processing_time_ms=round(elapsed_ms, 2),
+            button_slot=assigned_slot,
+            runner_up_name=runner_up_name,
+            runner_up_score=runner_up_score,
             captured_image=card_frame.copy(),
             query_embedding=query_embedding.copy()
         )

@@ -52,6 +52,10 @@ class RelativeRegion:
         )
 
 
+# Alias for concise usage
+RelRegion = RelativeRegion
+
+
 class CalibrationConfig:
     """Main calibration configuration model."""
 

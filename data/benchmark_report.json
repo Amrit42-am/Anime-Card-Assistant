@@ -1,18 +1,18 @@
 {
-  "timestamp": "2026-11-03T21:03:36Z",
+  "timestamp": "2026-11-03T22:05:09Z",
   "model": "dinov2",
   "data_leakage_prevented": true,
   "synthetic_images": {
     "total_evaluations": 120,
-    "top1_accuracy_percent": 98.33,
+    "top1_accuracy_percent": 100.0,
     "top2_accuracy_percent": 100.0,
-    "avg_latency_ms": 49.36,
-    "p95_latency_ms": 57.65,
+    "avg_latency_ms": 18.74,
+    "p95_latency_ms": 19.39,
     "per_distortion_breakdown": {
       "gaussian_jitter": 100.0,
       "box_jitter": 100.0,
       "motion_blur": 100.0,
-      "compound_noise": 93.33
+      "compound_noise": 100.0
     }
   },
   "real_roblox_blur_images": {
@@ -31,9 +31,9 @@
     "note": "Evaluates confidence calibration when true card is absent from candidate pool."
   },
   "summary": {
-    "synthetic_top1_percent": 98.33,
-    "avg_latency_ms": 49.36,
-    "p95_latency_ms": 57.65,
+    "synthetic_top1_percent": 100.0,
+    "avg_latency_ms": 18.74,
+    "p95_latency_ms": 19.39,
     "real_samples_count": 3,
     "disclaimer": "Metrics are measured independently. Real-game accuracy reflects verified gameplay samples only."
   }

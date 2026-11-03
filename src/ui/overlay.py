@@ -12,7 +12,7 @@ from typing import Optional, Dict, Any
 from PySide6.QtCore import Qt, QPoint
 from PySide6.QtGui import QMouseEvent, QColor
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
     QFrame, QSlider, QGraphicsDropShadowEffect, QMessageBox
 )
 
@@ -41,14 +41,17 @@ class FloatingOverlay(QWidget):
         self.init_worker()
 
     def init_window_flags(self):
-        # Frameless, Always on Top, floating desktop window
+        # Frameless, Always on Top, floating desktop window without stealing focus
         self.setWindowFlags(
             Qt.Window |
             Qt.FramelessWindowHint |
-            Qt.WindowStaysOnTopHint
+            Qt.WindowStaysOnTopHint |
+            Qt.Tool |
+            Qt.WindowDoesNotAcceptFocus
         )
         self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setFixedWidth(360)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setFixedWidth(380)
 
     def position_on_screen(self):
         """Positions overlay neatly on the right side of the screen."""
@@ -111,6 +114,16 @@ class FloatingOverlay(QWidget):
         self.live_indicator.setStyleSheet("color: #4ade80; font-weight: bold; font-size: 11px;")
         header.addWidget(self.live_indicator)
 
+        self.offline_indicator = QLabel("🔒 OFFLINE")
+        self.offline_indicator.setStyleSheet("color: #38bdf8; font-weight: bold; font-size: 10px; background: rgba(56, 189, 248, 0.15); border-radius: 3px; padding: 2px 4px;")
+        header.addWidget(self.offline_indicator)
+
+        self.btn_compact = QPushButton("▾ Compact")
+        self.btn_compact.setFixedHeight(22)
+        self.btn_compact.setStyleSheet("font-size: 10px; padding: 2px 6px;")
+        self.btn_compact.clicked.connect(self.toggle_compact_mode)
+        header.addWidget(self.btn_compact)
+
         btn_close = QPushButton("✕")
         btn_close.setFixedSize(22, 22)
         btn_close.setStyleSheet("background: transparent; border: none; font-size: 12px; color: #94a3b8;")
@@ -148,6 +161,17 @@ class FloatingOverlay(QWidget):
         badges_row.addWidget(self.source_badge)
         hero_layout.addLayout(badges_row)
 
+        self.slot_badge = QLabel("")
+        self.slot_badge.setAlignment(Qt.AlignCenter)
+        self.slot_badge.setStyleSheet("color: #38bdf8; font-size: 11px; font-weight: bold; background: rgba(56, 189, 248, 0.15); border-radius: 4px; padding: 2px 6px;")
+        self.slot_badge.setVisible(False)
+        hero_layout.addWidget(self.slot_badge)
+
+        self.runner_up_label = QLabel("Runner-up: —")
+        self.runner_up_label.setAlignment(Qt.AlignCenter)
+        self.runner_up_label.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        hero_layout.addWidget(self.runner_up_label)
+
         self.latency_label = QLabel("Latency: —")
         self.latency_label.setAlignment(Qt.AlignCenter)
         self.latency_label.setStyleSheet("color: #64748b; font-size: 10px;")
@@ -162,24 +186,29 @@ class FloatingOverlay(QWidget):
 
         layout.addLayout(hero_layout)
 
-        # 3. Candidate Options Box
+        # 3. Candidate Options Box (2x2 Grid)
         self.cand_frame = QFrame()
-        self.cand_frame.setStyleSheet("background-color: rgba(15, 23, 42, 140); border-radius: 6px; padding: 6px;")
-        self.cand_layout = QVBoxLayout(self.cand_frame)
+        self.cand_frame.setStyleSheet("background-color: rgba(15, 23, 42, 140); border-radius: 8px; padding: 6px;")
+        self.cand_layout = QGridLayout(self.cand_frame)
         self.cand_layout.setContentsMargins(6, 6, 6, 6)
-        self.cand_layout.setSpacing(4)
+        self.cand_layout.setSpacing(6)
 
+        slot_names = ["[TL]", "[TR]", "[BL]", "[BR]"]
         self.cand_labels = []
-        for i in range(4):
-            lbl = QLabel(f"— Option {i+1} —")
-            lbl.setStyleSheet("color: #94a3b8; font-size: 12px; padding: 2px 4px;")
-            self.cand_layout.addWidget(lbl)
+        positions = [(0, 0), (0, 1), (1, 0), (1, 1)]
+        for i, (r, c) in enumerate(positions):
+            lbl = QLabel(f"{slot_names[i]} —")
+            lbl.setStyleSheet("color: #94a3b8; font-size: 11px; padding: 6px 8px; background: rgba(30, 41, 59, 120); border: 1px solid rgba(71, 85, 105, 100); border-radius: 6px;")
+            lbl.setWordWrap(True)
+            self.cand_layout.addWidget(lbl, r, c)
             self.cand_labels.append(lbl)
 
         layout.addWidget(self.cand_frame)
 
         # 4. Learning & Feedback Actions
-        action_layout = QHBoxLayout()
+        self.action_frame = QFrame()
+        action_layout = QHBoxLayout(self.action_frame)
+        action_layout.setContentsMargins(0, 0, 0, 0)
         action_layout.setSpacing(6)
 
         self.btn_confirm = QPushButton("✓ Confirm")
@@ -202,10 +231,12 @@ class FloatingOverlay(QWidget):
         self.btn_calibrate.clicked.connect(self.open_calibration)
         action_layout.addWidget(self.btn_calibrate)
 
-        layout.addLayout(action_layout)
+        layout.addWidget(self.action_frame)
 
         # 5. Opacity slider row
-        op_layout = QHBoxLayout()
+        self.opacity_frame = QFrame()
+        op_layout = QHBoxLayout(self.opacity_frame)
+        op_layout.setContentsMargins(0, 0, 0, 0)
         op_lbl = QLabel("Opacity:")
         op_lbl.setStyleSheet("color: #64748b; font-size: 10px;")
         op_layout.addWidget(op_lbl)
@@ -215,7 +246,7 @@ class FloatingOverlay(QWidget):
         self.slider_opacity.setValue(94)
         self.slider_opacity.valueChanged.connect(self.update_opacity)
         op_layout.addWidget(self.slider_opacity)
-        layout.addLayout(op_layout)
+        layout.addWidget(self.opacity_frame)
 
         # 6. Status Footer
         footer = QHBoxLayout()
@@ -282,9 +313,24 @@ class FloatingOverlay(QWidget):
         self.card_name_label.setText(result.card_name.upper())
         self.card_name_label.setStyleSheet("font-size: 21px; font-weight: 800; color: #4ade80; padding: 4px 0;")
 
+        # Update slot badge
+        slot_names = ["TOP-LEFT [TL]", "TOP-RIGHT [TR]", "BOTTOM-LEFT [BL]", "BOTTOM-RIGHT [BR]"]
+        if getattr(result, "button_slot", None) is not None and 0 <= result.button_slot < 4:
+            self.slot_badge.setText(f"TARGET SLOT: {slot_names[result.button_slot]}")
+            self.slot_badge.setVisible(True)
+        else:
+            self.slot_badge.setVisible(False)
+
+        # Update runner-up
+        if getattr(result, "runner_up_name", None):
+            score_str = f" ({result.runner_up_score:.2f})" if result.runner_up_score else ""
+            self.runner_up_label.setText(f"Runner-up: {result.runner_up_name}{score_str} | Margin: +{result.margin:.2f}")
+        else:
+            self.runner_up_label.setText(f"Margin: +{result.margin:.2f}")
+
         self.conf_badge.set_confidence(result.confidence, result.confidence_level)
         self.source_badge.set_source(result.matched_from)
-        self.latency_label.setText(f"Latency: {result.processing_time_ms:.0f} ms | Margin: +{result.margin:.2f}")
+        self.latency_label.setText(f"Latency: {result.processing_time_ms:.0f} ms")
 
         self.update_candidates_display(result)
 
@@ -298,9 +344,22 @@ class FloatingOverlay(QWidget):
         self.card_name_label.setText(f"{result.card_name} ?")
         self.card_name_label.setStyleSheet("font-size: 20px; font-weight: 800; color: #fbbf24; padding: 4px 0;")
 
+        slot_names = ["TOP-LEFT [TL]", "TOP-RIGHT [TR]", "BOTTOM-LEFT [BL]", "BOTTOM-RIGHT [BR]"]
+        if getattr(result, "button_slot", None) is not None and 0 <= result.button_slot < 4:
+            self.slot_badge.setText(f"POSSIBLE SLOT: {slot_names[result.button_slot]}")
+            self.slot_badge.setVisible(True)
+        else:
+            self.slot_badge.setVisible(False)
+
+        if getattr(result, "runner_up_name", None):
+            score_str = f" ({result.runner_up_score:.2f})" if result.runner_up_score else ""
+            self.runner_up_label.setText(f"Runner-up: {result.runner_up_name}{score_str} | Margin: +{result.margin:.2f}")
+        else:
+            self.runner_up_label.setText(f"Margin: +{result.margin:.2f}")
+
         self.conf_badge.set_confidence(result.confidence, "UNCERTAIN")
         self.source_badge.set_source(result.matched_from)
-        self.latency_label.setText(f"Latency: {result.processing_time_ms:.0f} ms | Margin: +{result.margin:.2f}")
+        self.latency_label.setText(f"Latency: {result.processing_time_ms:.0f} ms")
 
         self.update_candidates_display(result)
 
@@ -327,21 +386,48 @@ class FloatingOverlay(QWidget):
     def on_memory_updated(self, total: int):
         self.learned_label.setText(f"Memory: {total}")
 
+    def toggle_compact_mode(self):
+        """Toggles between full view and compact mini-HUD."""
+        self.is_compact = not getattr(self, "is_compact", False)
+        self.cand_frame.setVisible(not self.is_compact)
+        self.action_frame.setVisible(not self.is_compact)
+        self.opacity_frame.setVisible(not self.is_compact)
+        self.runner_up_label.setVisible(not self.is_compact)
+        self.btn_compact.setText("▴ Expand" if self.is_compact else "▾ Compact")
+        self.adjustSize()
+
     def update_candidates_display(self, result: AnswerResult):
         candidates = result.candidates or [result.card_name]
+        slot_prefixes = ["[TL]", "[TR]", "[BL]", "[BR]"]
+        assigned_slot = getattr(result, "button_slot", None)
+
         for i in range(4):
+            prefix = slot_prefixes[i]
             if i < len(candidates):
                 name = candidates[i]
-                is_winner = (name.lower() == result.card_name.lower())
-                prefix = "➤ " if is_winner else "   "
-                self.cand_labels[i].setText(f"{prefix}{name}")
+                is_winner = False
+                if assigned_slot is not None and assigned_slot == i:
+                    is_winner = True
+                elif name.lower().strip() == result.card_name.lower().strip():
+                    is_winner = True
+
+                marker = "➤ " if is_winner else "   "
+                self.cand_labels[i].setText(f"{prefix} {marker}{name}")
                 if is_winner:
-                    self.cand_labels[i].setStyleSheet("color: #4ade80; font-weight: bold; background: rgba(34, 197, 94, 0.15); border-radius: 4px;")
+                    self.cand_labels[i].setStyleSheet(
+                        "color: #4ade80; font-weight: bold; background: rgba(34, 197, 94, 0.25); "
+                        "border: 1px solid #22c55e; border-radius: 6px; padding: 6px 8px;"
+                    )
                 else:
-                    self.cand_labels[i].setStyleSheet("color: #94a3b8; font-weight: normal; background: transparent;")
+                    self.cand_labels[i].setStyleSheet(
+                        "color: #94a3b8; font-weight: normal; background: rgba(30, 41, 59, 120); "
+                        "border: 1px solid rgba(71, 85, 105, 100); border-radius: 6px; padding: 6px 8px;"
+                    )
             else:
-                self.cand_labels[i].setText("—")
-                self.cand_labels[i].setStyleSheet("color: #475569; background: transparent;")
+                self.cand_labels[i].setText(f"{prefix} —")
+                self.cand_labels[i].setStyleSheet(
+                    "color: #475569; background: rgba(15, 23, 42, 80); border: 1px solid rgba(51, 65, 85, 60); border-radius: 6px; padding: 6px 8px;"
+                )
 
     def on_confirm_answer(self):
         """User confirms predicted card was correct; saves to learned memory."""
