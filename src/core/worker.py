@@ -8,12 +8,13 @@ using PySide6 QThread to ensure the floating overlay UI remains smooth and respo
 
 import logging
 import time
-from typing import Optional
+from typing import Optional, Tuple
 
 from PySide6.QtCore import QThread, Signal
 
 from src.core.pipeline import QuizPipeline
 from src.core.decision_engine import AnswerResult
+from src.learning.sample_collector import CollectionReport
 
 logger = logging.getLogger("worker")
 
@@ -25,6 +26,7 @@ class PipelineWorker(QThread):
     sig_fps = Signal(float)             # Current monitoring FPS
     sig_answer_ready = Signal(object)   # Emits AnswerResult when high confidence
     sig_uncertain = Signal(object)      # Emits AnswerResult when ambiguous
+    sig_auto_learned = Signal(object)   # Emits CollectionReport when result ground truth learned
     sig_error = Signal(str)             # Emits error description
     sig_memory_updated = Signal(int)    # Emits total confirmed blur sample count
 
@@ -53,7 +55,7 @@ class PipelineWorker(QThread):
                 continue
 
             try:
-                result: Optional[AnswerResult] = self.pipeline.step()
+                result, collection_report = self.pipeline.step()
 
                 if result is not None:
                     if result.status == "matched":
@@ -64,6 +66,10 @@ class PipelineWorker(QThread):
                         self.sig_uncertain.emit(result)
                 else:
                     self.sig_status.emit(self.pipeline.state)
+
+                if collection_report is not None:
+                    self.sig_auto_learned.emit(collection_report)
+                    self.sig_memory_updated.emit(self.pipeline.memory.total_samples)
 
             except Exception as e:
                 logger.error("Error in pipeline worker step: %s", e, exc_info=True)
@@ -84,6 +90,10 @@ class PipelineWorker(QThread):
 
         logger.info("PipelineWorker stopped.")
         self.sig_status.emit("STOPPED")
+
+    def stop(self):
+        self._running = False
+        self.wait(1000)
 
     def pause(self):
         self._paused = True

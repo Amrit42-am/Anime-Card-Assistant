@@ -43,5 +43,6 @@ htmlcov/
 data/test_btn.png
 data/*.tmp
 data/blur_variants/
-data/learned_blurs/card_*/temp.png
+data/learned_blurs/card_*
+data/card_memory.db-journal
 

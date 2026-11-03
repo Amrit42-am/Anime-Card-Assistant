@@ -109,3 +109,69 @@ def test_pipeline_confirm_and_learn(pipeline):
 
     # Cleanup test sample so it does not pollute real memory
     pipeline.memory.invalidate_sample(sid)
+
+
+def test_pipeline_step_lifecycle(pipeline):
+    """
+    Tests full pipeline.step() lifecycle:
+    Active Question -> Answer Prediction (<100ms) -> Result Screen -> Auto-Learning
+    """
+    import time
+    options = ["Shadow Duelist", "Green Bomber", "Harmonious Soul", "Soul King"]
+
+    # 1. Active Question Screen
+    active_bundle = create_mock_quiz_frame("Green Bomber", options)
+    # Monkey-patch pipeline.capture.capture_quiz_bundle to return active_bundle
+    orig_capture = pipeline.capture.capture_quiz_bundle
+    pipeline.capture.capture_quiz_bundle = lambda *args, **kwargs: active_bundle
+
+    pipeline.detector.reset()
+
+    # Step 1: Active question frame
+    answer, report = pipeline.step()
+    assert answer is not None
+    assert answer.status == "matched"
+    assert answer.card_name == "Green Bomber"
+    assert report is None
+
+    # Step 2: Next frame during active question (no duplicate prediction)
+    answer2, report2 = pipeline.step()
+    assert answer2 is None
+    assert report2 is None
+
+    # 2. Result Revealed Screen (Green Bomber button is green)
+    real_card = cv2.imread("assets/cards/card_137_green-bomber.png")
+    result_buttons = []
+    opt_w = 260
+    for i, name in enumerate(options):
+        btn = np.ones((56, opt_w - 8, 3), dtype=np.uint8)
+        if name == "Green Bomber":
+            btn[:, :] = (30, 180, 30)  # Green
+        else:
+            btn[:, :] = (40, 40, 40)   # Neutral
+        cv2.putText(btn, name, (10, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        result_buttons.append(btn)
+
+    result_bundle = {
+        "game_frame": active_bundle["game_frame"],
+        "card_frame": real_card,
+        "options_frame": active_bundle["options_frame"],
+        "button_frames": result_buttons,
+        "timer_frame": None,
+    }
+
+    # Simulate 0.5s delay for game result reveal
+    time.sleep(0.5)
+    pipeline.capture.capture_quiz_bundle = lambda *args, **kwargs: result_bundle
+
+    # Step 3: Result frame
+    answer3, report3 = pipeline.step()
+    assert answer3 is None
+    assert report3 is not None
+    assert report3.verified is True
+    assert report3.card_name == "Green Bomber"
+
+    # Cleanup
+    pipeline.capture.capture_quiz_bundle = orig_capture
+    if report3.sample_id:
+        pipeline.memory.invalidate_sample(report3.sample_id)

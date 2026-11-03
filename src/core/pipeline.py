@@ -3,14 +3,16 @@ src/core/pipeline.py
 
 Phase 9 & 13: Main Application Pipeline.
 Coordinates ScreenCapture, QuestionDetector, OptionReader, ImageEncoder,
-ImageMatcher, BlurMemorySystem, and AnswerDecisionEngine.
-Manages the application state machine:
-IDLE -> DETECTING -> QUESTION_FOUND -> OCR_PROCESSING -> IMAGE_MATCHING -> ANSWER_READY / UNCERTAIN
+ImageMatcher, BlurMemorySystem, AnswerDecisionEngine, ResultDetector,
+and AutomaticSampleCollector.
+
+Manages the full quiz lifecycle:
+IDLE -> ACTIVE_QUESTION (live sub-100ms prediction) -> RESULT_REVEALED (auto-ground-truth learning) -> NEXT_QUESTION
 """
 
 import logging
 import time
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 
 from src.capture.region_manager import CalibrationConfig
 from src.capture.screen_capture import ScreenCapture
@@ -20,12 +22,14 @@ from src.recognition.image_encoder import BaseImageEncoder, get_image_encoder
 from src.recognition.image_matcher import ImageMatcher
 from src.memory.blur_memory import BlurMemorySystem
 from src.core.decision_engine import AnswerDecisionEngine, AnswerResult
+from src.learning.result_detector import ResultDetector, ResultDetectionEvent
+from src.learning.sample_collector import AutomaticSampleCollector, CollectionReport
 
 logger = logging.getLogger("pipeline")
 
 
 class QuizPipeline:
-    """End-to-end processing pipeline for Roblox card recognition."""
+    """End-to-end processing pipeline for Roblox card recognition and automatic learning."""
 
     def __init__(
         self,
@@ -36,11 +40,13 @@ class QuizPipeline:
         self.calibration = calibration or CalibrationConfig.load()
         self.state = "IDLE"
         self.last_result: Optional[AnswerResult] = None
+        self.last_collection_report: Optional[CollectionReport] = None
 
         logger.info("Initializing pipeline modules...")
         self.capture = ScreenCapture(calibration=self.calibration)
         self.detector = QuestionDetector()
         self.option_reader = OptionReader()
+        self.result_detector = ResultDetector(option_reader=self.option_reader)
 
         if auto_init_models:
             self.encoder: BaseImageEncoder = get_image_encoder(encoder_name)
@@ -52,56 +58,108 @@ class QuizPipeline:
                 option_reader=self.option_reader,
                 memory=self.memory
             )
+            self.sample_collector = AutomaticSampleCollector(
+                memory=self.memory,
+                matcher=self.matcher,
+                encoder=self.encoder
+            )
         else:
             self.encoder = None
             self.matcher = None
             self.memory = None
             self.decision_engine = None
+            self.sample_collector = None
 
-        logger.info("QuizPipeline successfully initialized.")
+        logger.info("QuizPipeline successfully initialized with automatic result learning.")
 
-    def step(self) -> Optional[AnswerResult]:
+    def step(self) -> Tuple[Optional[AnswerResult], Optional[CollectionReport]]:
         """
         Executes a single monitoring step:
         1. Capture screen bundle.
-        2. Run question detector.
-        3. If fresh question detected, run decision engine.
-        4. Return AnswerResult if resolved, else None.
+        2. Advance QuestionDetector state machine.
+        3. If ACTIVE_QUESTION: run live candidate prediction immediately (<100ms) and buffer question.
+        4. If RESULT_REVEALED: run result detector, verify green button + clear artwork, and auto-learn.
+        Returns (AnswerResult or None, CollectionReport or None).
         """
         bundle = self.capture.capture_quiz_bundle(self.calibration)
         event: QuestionEvent = self.detector.process_frame_bundle(bundle)
 
-        if not event.question_detected:
-            self.state = "DETECTING" if event.state == "ACTIVE_QUIZ" else "IDLE"
-            return None
+        answer_res: Optional[AnswerResult] = None
+        collection_rep: Optional[CollectionReport] = None
 
-        # Fresh Question Found!
-        self.state = "QUESTION_FOUND"
-        logger.info("Pipeline: New question detected! Commencing analysis...")
+        # 1. State: ACTIVE_QUESTION -> Deliver live prediction immediately
+        if event.question_detected:
+            self.state = "ACTIVE_QUESTION"
+            logger.info("Pipeline: New question detected! Commencing sub-100ms candidate analysis...")
 
-        card_frame = event.card_frame
-        button_frames = event.button_frames
-        options_frame = event.options_frame
+            card_frame = event.card_frame
+            button_frames = event.button_frames
+            options_frame = event.options_frame
 
-        self.state = "OCR_PROCESSING"
-        # Decision engine handles OCR + Embedding + Matching
-        result = self.decision_engine.process_question(
-            card_frame=card_frame,
-            button_frames=button_frames,
-            options_frame=options_frame
-        )
+            result = self.decision_engine.process_question(
+                card_frame=card_frame,
+                button_frames=button_frames,
+                options_frame=options_frame
+            )
 
-        self.last_result = result
-        self.state = "ANSWER_READY" if result.status == "matched" else "UNCERTAIN"
-        logger.info("Pipeline answer: %s (Confidence: %.2f from %s) in %.1f ms",
-                    result.card_name, result.confidence, result.matched_from, result.processing_time_ms)
+            self.last_result = result
+            self.state = "ANSWER_READY" if result.status == "matched" else "UNCERTAIN"
+            logger.info("Pipeline live prediction: %s (Confidence: %.2f from %s) in %.1f ms",
+                        result.card_name, result.confidence, result.matched_from, result.processing_time_ms)
 
-        return result
+            # Register with sample collector for upcoming result pairing
+            if self.sample_collector:
+                opt_ids = [self.matcher.find_card_index(name) for name in result.candidates]
+                opt_cids = [int(self.matcher.card_ids[idx]) if idx is not None else None for idx in opt_ids]
+
+                self.sample_collector.register_active_question(
+                    card_frame=card_frame,
+                    option_names=result.candidates,
+                    option_ids=opt_cids,
+                    predicted_name=result.card_name,
+                    predicted_id=result.card_id,
+                    card_hash=event.card_hash,
+                    timestamp=event.timestamp,
+                    blurred_embedding=result.query_embedding
+                )
+
+            answer_res = result
+
+        # 2. State: RESULT_REVEALED -> Process ground-truth automatic learning
+        elif event.is_result_detected and self.sample_collector:
+            self.state = "RESULT_REVEALED"
+            logger.info("Pipeline: Result revealed! Detecting green button & validating ground truth...")
+
+            res_event: ResultDetectionEvent = self.result_detector.evaluate_screen(
+                card_frame=event.card_frame,
+                button_frames=event.button_frames,
+                options_frame=event.options_frame,
+                timer_frame=event.timer_frame,
+                timestamp=event.timestamp
+            )
+
+            report = self.sample_collector.process_result(
+                clear_frame=event.card_frame,
+                button_frames=event.button_frames,
+                result_event=res_event,
+                timestamp=event.timestamp
+            )
+
+            if report:
+                self.last_collection_report = report
+                collection_rep = report
+                self.detector.notify_sample_verified()
+                logger.info("Pipeline auto-learning outcome: %s (Sample ID: %s)", report.message, report.sample_id)
+            else:
+                self.detector.notify_sample_verified()
+
+        else:
+            self.state = event.state
+
+        return answer_res, collection_rep
 
     def confirm_last_answer(self, notes: str = "") -> Optional[int]:
-        """
-        Confirms the last predicted answer into permanent learned blur memory.
-        """
+        """Manually confirms the last predicted answer into permanent learned blur memory."""
         if not self.last_result or self.last_result.card_id is None:
             logger.warning("No valid card in last result to confirm.")
             return None
@@ -114,17 +172,19 @@ class QuizPipeline:
             card_id=self.last_result.card_id,
             card_name=self.last_result.card_name,
             blurred_image=self.last_result.captured_image,
+            clear_image=None,
+            options=self.last_result.candidates,
             embedding=self.last_result.query_embedding,
             confidence=self.last_result.confidence,
+            source="manual_confirmation",
+            verification_status="VERIFIED",
             notes=notes
         )
-        logger.info("Confirmed last answer into memory: Sample ID %d", sid)
+        logger.info("Manually confirmed last answer into memory: Sample ID %s", sid)
         return sid
 
     def correct_last_answer(self, correct_card_name: str) -> Optional[int]:
-        """
-        Manually corrects the last card identity and confirms it into memory.
-        """
+        """Manually corrects the last card identity and confirms it into memory."""
         if not self.last_result or self.last_result.captured_image is None:
             logger.warning("No last result to correct.")
             return None
@@ -141,11 +201,14 @@ class QuizPipeline:
             card_id=correct_id,
             card_name=correct_canonical,
             blurred_image=self.last_result.captured_image,
+            clear_image=None,
+            options=self.last_result.candidates,
             embedding=self.last_result.query_embedding,
             confidence=1.0,
+            source="manual_correction",
+            verification_status="VERIFIED",
             notes=f"Corrected from {self.last_result.card_name}"
         )
-        logger.info("Saved manual correction into memory: %s (#%d), Sample %d",
+        logger.info("Saved manual correction into memory: %s (#%d), Sample %s",
                     correct_canonical, correct_id, sid)
         return sid
-

@@ -167,19 +167,51 @@ class BlurMemorySystem:
             "margin": best_score - second_score
         }
 
+    def is_duplicate_sample(
+        self,
+        card_id: int,
+        embedding: np.ndarray,
+        blur_hash: Optional[str] = None,
+        sim_threshold: float = 0.985
+    ) -> bool:
+        """Checks if an identical or nearly identical sample already exists in memory."""
+        if blur_hash and self.db.has_blur_hash(card_id, blur_hash):
+            return True
+
+        if len(self.card_ids) == 0 or len(self.embeddings) == 0:
+            return False
+
+        same_card_indices = [i for i, cid in enumerate(self.card_ids) if cid == card_id]
+        if not same_card_indices:
+            return False
+
+        sub_embs = self.embeddings[same_card_indices]
+        sims = np.dot(sub_embs, embedding)
+        return float(np.max(sims)) >= sim_threshold
+
     def add_confirmed_sample(
         self,
         card_id: int,
         card_name: str,
         blurred_image: np.ndarray,
+        clear_image: Optional[np.ndarray] = None,
+        options: Optional[List[str]] = None,
         embedding: Optional[np.ndarray] = None,
         confidence: float = 1.0,
+        source: str = "user_confirmed",
+        verification_status: str = "VERIFIED",
+        blur_hash: Optional[str] = None,
+        session_id: Optional[str] = None,
         notes: str = ""
-    ) -> int:
+    ) -> Optional[int]:
         """
-        Saves a newly confirmed blurred screenshot from game play.
-        CRITICAL RULE: Called ONLY after the card identity is confirmed by the user.
+        Saves a confirmed blurred screenshot (and optional revealed clear screenshot) from game play.
+        CRITICAL RULE: Confirmed samples must be verified (either automatically via green button
+        cross-checked with clear image or manually by the user).
+        Checks for duplicates before persisting.
         """
+        import json
+
         if embedding is None:
             if not self.encoder:
                 raise ValueError("Encoder required when adding sample without precomputed embedding.")
@@ -190,6 +222,11 @@ class BlurMemorySystem:
         if emb_norm > 0:
             embedding /= emb_norm
 
+        # Duplicate detection check
+        if self.is_duplicate_sample(card_id, embedding, blur_hash):
+            logger.info("Sample for card #%d %s is already present in memory (duplicate). Skipping save.", card_id, card_name)
+            return None
+
         card_folder = self.storage_dir / f"card_{card_id:03d}"
         card_folder.mkdir(parents=True, exist_ok=True)
 
@@ -197,38 +234,54 @@ class BlurMemorySystem:
         temp_img_path = card_folder / "temp.png"
         cv2.imwrite(str(temp_img_path), blurred_image)
 
+        options_json = json.dumps(options) if options else None
+
         sample_id = self.db.insert_sample(
             card_id=card_id,
             card_name=card_name,
             image_path=str(temp_img_path),
-            is_confirmed=True,
+            clear_image_path=None,
+            is_confirmed=(verification_status == "VERIFIED"),
             confidence=confidence,
-            source="user_confirmed",
+            source=source,
+            verification_status=verification_status,
+            options_json=options_json,
+            blur_hash=blur_hash,
+            session_id=session_id,
             notes=notes
         )
 
-        final_img_path = card_folder / f"sample_{sample_id:04d}.png"
-        temp_img_path.replace(final_img_path)
+        final_blur_path = card_folder / f"sample_{sample_id:04d}_blur.png"
+        temp_img_path.replace(final_blur_path)
 
-        # Update DB with final path
+        final_clear_path = None
+        if clear_image is not None and clear_image.size > 0:
+            final_clear_path = card_folder / f"sample_{sample_id:04d}_clear.png"
+            cv2.imwrite(str(final_clear_path), clear_image)
+
+        # Update DB with final paths
         with self.db._get_connection() as conn:
             conn.cursor().execute(
-                "UPDATE learned_blurs SET image_path = ? WHERE sample_id = ?;",
-                (str(final_img_path), sample_id)
+                "UPDATE learned_blurs SET image_path = ?, clear_image_path = ? WHERE sample_id = ?;",
+                (str(final_blur_path), str(final_clear_path) if final_clear_path else None, sample_id)
             )
             conn.commit()
 
-        # Update in-memory state
-        self.sample_ids.append(sample_id)
-        self.card_ids.append(card_id)
-        self.card_names.append(card_name)
-        if len(self.embeddings) == 0:
-            self.embeddings = embedding.reshape(1, -1)
-        else:
-            self.embeddings = np.vstack([self.embeddings, embedding.reshape(1, -1)])
+        # Update in-memory state only if verified
+        if verification_status == "VERIFIED":
+            self.sample_ids.append(sample_id)
+            self.card_ids.append(card_id)
+            self.card_names.append(card_name)
+            if len(self.embeddings) == 0:
+                self.embeddings = embedding.reshape(1, -1)
+            else:
+                self.embeddings = np.vstack([self.embeddings, embedding.reshape(1, -1)])
 
-        self._save_cache_npz()
-        logger.info("Saved confirmed blur memory for #%d %s (Sample ID: %d)", card_id, card_name, sample_id)
+            self._save_cache_npz()
+            logger.info("Saved verified blur memory for #%d %s (Sample ID: %d, Source: %s)", card_id, card_name, sample_id, source)
+        else:
+            logger.warning("Saved sample #%d %s as UNVERIFIED (Sample ID: %d, Disagreement recorded)", card_id, card_name, sample_id)
+
         return sample_id
 
     def correct_sample(self, sample_id: int, correct_card_id: int, correct_card_name: str):

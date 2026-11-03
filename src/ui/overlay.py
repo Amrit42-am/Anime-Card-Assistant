@@ -153,6 +153,13 @@ class FloatingOverlay(QWidget):
         self.latency_label.setStyleSheet("color: #64748b; font-size: 10px;")
         hero_layout.addWidget(self.latency_label)
 
+        # Auto-learned notification banner
+        self.auto_learn_banner = QLabel("")
+        self.auto_learn_banner.setAlignment(Qt.AlignCenter)
+        self.auto_learn_banner.setWordWrap(True)
+        self.auto_learn_banner.setVisible(False)
+        hero_layout.addWidget(self.auto_learn_banner)
+
         layout.addLayout(hero_layout)
 
         # 3. Candidate Options Box
@@ -239,6 +246,8 @@ class FloatingOverlay(QWidget):
         self.worker.sig_fps.connect(self.on_worker_fps)
         self.worker.sig_answer_ready.connect(self.display_answer)
         self.worker.sig_uncertain.connect(self.display_uncertain)
+        self.worker.sig_auto_learned.connect(self.on_auto_learned)
+        self.worker.sig_memory_updated.connect(self.on_memory_updated)
         self.worker.sig_error.connect(self.on_worker_error)
         self.worker.start()
 
@@ -266,6 +275,7 @@ class FloatingOverlay(QWidget):
     def display_answer(self, result: AnswerResult):
         """Displays high-confidence predicted card."""
         self.last_result = result
+        self.auto_learn_banner.setVisible(False)
         self.state_label.setText("ANSWER FOUND")
         self.state_label.setStyleSheet("color: #4ade80; font-weight: bold;")
 
@@ -281,6 +291,7 @@ class FloatingOverlay(QWidget):
     def display_uncertain(self, result: AnswerResult):
         """Displays prediction when confidence is low or ambiguous."""
         self.last_result = result
+        self.auto_learn_banner.setVisible(False)
         self.state_label.setText("UNCERTAIN MATCH")
         self.state_label.setStyleSheet("color: #f59e0b; font-weight: bold;")
 
@@ -292,6 +303,29 @@ class FloatingOverlay(QWidget):
         self.latency_label.setText(f"Latency: {result.processing_time_ms:.0f} ms | Margin: +{result.margin:.2f}")
 
         self.update_candidates_display(result)
+
+    def on_auto_learned(self, report):
+        """Displays auto-learned result status."""
+        if not report:
+            return
+        if report.verified:
+            self.auto_learn_banner.setText(f"★ Auto-Learned: {report.card_name}")
+            self.auto_learn_banner.setStyleSheet(
+                "color: #4ade80; font-size: 11px; font-weight: bold; "
+                "background: rgba(34, 197, 94, 0.2); border: 1px solid rgba(34, 197, 94, 0.4); "
+                "border-radius: 4px; padding: 3px 6px;"
+            )
+        else:
+            self.auto_learn_banner.setText(f"⚠ Result: {report.message}")
+            self.auto_learn_banner.setStyleSheet(
+                "color: #f59e0b; font-size: 11px; font-weight: bold; "
+                "background: rgba(245, 158, 11, 0.2); border: 1px solid rgba(245, 158, 11, 0.4); "
+                "border-radius: 4px; padding: 3px 6px;"
+            )
+        self.auto_learn_banner.setVisible(True)
+
+    def on_memory_updated(self, total: int):
+        self.learned_label.setText(f"Memory: {total}")
 
     def update_candidates_display(self, result: AnswerResult):
         candidates = result.candidates or [result.card_name]

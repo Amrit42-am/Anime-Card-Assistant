@@ -1,17 +1,17 @@
 """
 src/detection/question_detector.py
 
-Phase 4: Automatic Question Detection.
-Monitors the calibrated Roblox game region to detect when a new quiz appears.
-Distinguishes between gameplay, loading, active quiz, and answered rounds.
-Uses visual difference analysis, perceptual hashing, and edge detection on answer buttons
-to prevent repeated triggers on the same question.
+Phase: State-Machine Question & Transition Detector.
+Implements the full Roblox game lifecycle state machine:
+IDLE -> ACTIVE_QUESTION -> ANSWER_RECOGNITION -> RESULT_REVEALED -> SAMPLE_VERIFICATION -> NEXT_QUESTION
+
+Allows repeated cards across consecutive rounds without blanket cooldown suppression.
 """
 
 from dataclasses import dataclass
 import logging
 import time
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, List, Tuple
 import cv2
 import numpy as np
 
@@ -20,46 +20,52 @@ logger = logging.getLogger("question_detector")
 
 @dataclass
 class QuestionEvent:
-    question_detected: bool
-    state: str  # "IDLE", "LOADING", "ACTIVE_QUIZ", "ANSWERED"
+    question_detected: bool       # True ONLY on the fresh transition into ACTIVE_QUESTION
+    is_result_detected: bool      # True on the fresh transition into RESULT_REVEALED
+    state: str                    # Current state machine state
     timestamp: float
     card_hash: str
+    card_sharpness: float
     change_delta: float
     card_frame: Optional[np.ndarray] = None
     options_frame: Optional[np.ndarray] = None
-    button_frames: Optional[list[np.ndarray]] = None
+    button_frames: Optional[List[np.ndarray]] = None
+    timer_frame: Optional[np.ndarray] = None
 
 
 class QuestionDetector:
-    """Detects active quiz states and transitions from captured video frames."""
+    """State machine tracker for Roblox Anime Card Clash quiz lifecycle."""
+
+    STATES = [
+        "IDLE",
+        "ACTIVE_QUESTION",
+        "ANSWER_RECOGNITION",
+        "RESULT_REVEALED",
+        "SAMPLE_VERIFICATION",
+        "NEXT_QUESTION"
+    ]
 
     def __init__(
         self,
-        min_change_threshold: float = 8.0,
-        button_edge_threshold: float = 18.0,
-        hash_similarity_threshold: int = 6,
-        cooldown_seconds: float = 2.5,
+        min_change_threshold: float = 6.0,
+        button_edge_threshold: float = 14.0,
+        sharpness_threshold: float = 120.0,
     ):
         self.min_change_threshold = min_change_threshold
         self.button_edge_threshold = button_edge_threshold
-        self.hash_similarity_threshold = hash_similarity_threshold
-        self.cooldown_seconds = cooldown_seconds
+        self.sharpness_threshold = sharpness_threshold
 
+        self.current_state = "IDLE"
         self.last_card_gray: Optional[np.ndarray] = None
-        self.last_options_gray: Optional[np.ndarray] = None
-        self.last_active_hash: Optional[str] = None
-        self.last_event_time: float = 0.0
-        self.current_state: str = "IDLE"
+        self.last_card_hash: Optional[str] = None
+        self.active_question_hash: Optional[str] = None
+        self.last_state_change_time: float = time.time()
 
     @staticmethod
     def compute_dhash(image: np.ndarray, hash_size: int = 8) -> str:
-        """
-        Computes difference hash (dHash) of an image region.
-        Robust to minor brightness/scaling shifts, sensitive to structure changes.
-        """
+        """Computes difference hash (dHash) of card image."""
         if image is None or image.size == 0:
-            return "0" * (hash_size * hash_size)
-
+            return "0" * (hash_size * hash_size // 4)
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
         resized = cv2.resize(gray, (hash_size + 1, hash_size), interpolation=cv2.INTER_AREA)
         diff = resized[:, 1:] > resized[:, :-1]
@@ -67,128 +73,154 @@ class QuestionDetector:
         return hex(int(bits, 2))[2:].zfill(hash_size * hash_size // 4)
 
     @staticmethod
-    def hamming_distance(hash1: str, hash2: str) -> int:
-        """Computes bitwise Hamming distance between two hex hashes."""
-        try:
-            val1 = int(hash1, 16)
-            val2 = int(hash2, 16)
-            return bin(val1 ^ val2).count("1")
-        except Exception:
-            return 999
+    def compute_sharpness(card_frame: np.ndarray) -> float:
+        """Computes Laplacian edge variance to measure blur vs clear artwork."""
+        if card_frame is None or card_frame.size == 0:
+            return 0.0
+        gray = cv2.cvtColor(card_frame, cv2.COLOR_BGR2GRAY) if card_frame.ndim == 3 else card_frame
+        resized = cv2.resize(gray, (224, 224), interpolation=cv2.INTER_AREA)
+        lap = cv2.Laplacian(resized, cv2.CV_64F)
+        return float(lap.var())
 
     def has_button_structure(self, options_frame: np.ndarray) -> bool:
-        """
-        Checks for horizontal button outlines in the options area.
-        Quiz active state displays 4 prominent rectangular button shapes.
-        """
+        """Verifies horizontal button slot boundaries in options area."""
         if options_frame is None or options_frame.shape[0] < 40 or options_frame.shape[1] < 40:
             return False
-
         gray = cv2.cvtColor(options_frame, cv2.COLOR_BGR2GRAY) if options_frame.ndim == 3 else options_frame
-        # Horizontal Sobel edge response
         sobel_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
-        edge_energy = float(np.mean(np.abs(sobel_y)))
-        return edge_energy > self.button_edge_threshold
+        return float(np.mean(np.abs(sobel_y))) > self.button_edge_threshold
 
     def has_card_content(self, card_frame: np.ndarray) -> bool:
-        """
-        Verifies that the card artwork area is non-empty and has reasonable variance
-        (not a pure black or solid background color).
-        """
+        """Verifies card artwork box is not solid background."""
         if card_frame is None or card_frame.size == 0:
             return False
-
         gray = cv2.cvtColor(card_frame, cv2.COLOR_BGR2GRAY) if card_frame.ndim == 3 else card_frame
-        std_dev = float(np.std(gray))
-        # Solid screen has std_dev < 10
-        return std_dev > 14.0
+        return float(np.std(gray)) > 14.0
+
+    @staticmethod
+    def has_result_colors(button_frames: Optional[List[np.ndarray]]) -> Tuple[bool, bool]:
+        """
+        Detects if any button is green (correct) or red (incorrect selection).
+        Returns (has_green, has_red).
+        """
+        if not button_frames:
+            return False, False
+
+        has_green = False
+        has_red = False
+
+        for btn in button_frames:
+            if btn is None or btn.size == 0:
+                continue
+            hsv = cv2.cvtColor(btn, cv2.COLOR_BGR2HSV)
+
+            # Green mask
+            mg = cv2.inRange(hsv, (35, 50, 45), (88, 255, 255))
+            if (np.count_nonzero(mg) / mg.size) > 0.18:
+                has_green = True
+
+            # Red mask
+            mr1 = cv2.inRange(hsv, (0, 55, 50), (10, 255, 255))
+            mr2 = cv2.inRange(hsv, (165, 55, 50), (180, 255, 255))
+            mr = mr1 | mr2
+            if (np.count_nonzero(mr) / mr.size) > 0.18:
+                has_red = True
+
+        return has_green, has_red
 
     def process_frame_bundle(self, bundle: Dict[str, Any]) -> QuestionEvent:
         """
-        Evaluates captured frame bundle.
-        Returns a QuestionEvent indicating whether a fresh quiz question is present.
+        Advances the state machine based on visual evidence from frame bundle.
         """
         now = time.time()
         card_frame = bundle.get("card_frame")
         options_frame = bundle.get("options_frame")
         button_frames = bundle.get("button_frames")
+        timer_frame = bundle.get("timer_frame")
 
-        if card_frame is None or options_frame is None:
+        if card_frame is None or options_frame is None or not self.has_card_content(card_frame):
+            if self.current_state != "IDLE":
+                self._transition("IDLE", now)
             return QuestionEvent(
                 question_detected=False,
-                state="IDLE",
+                is_result_detected=False,
+                state=self.current_state,
                 timestamp=now,
                 card_hash="",
+                card_sharpness=0.0,
                 change_delta=0.0
             )
 
         card_gray = cv2.cvtColor(card_frame, cv2.COLOR_BGR2GRAY) if card_frame.ndim == 3 else card_frame
         current_hash = self.compute_dhash(card_gray)
+        sharpness = self.compute_sharpness(card_frame)
 
-        # 1. Check frame delta compared to previous capture
         if self.last_card_gray is not None and self.last_card_gray.shape == card_gray.shape:
             delta = float(np.mean(np.abs(card_gray.astype(float) - self.last_card_gray.astype(float))))
         else:
             delta = 100.0
 
         self.last_card_gray = card_gray.copy()
+        self.last_card_hash = current_hash
 
-        # 2. Structural verification
-        card_ok = self.has_card_content(card_frame)
-        buttons_ok = self.has_button_structure(options_frame)
+        has_buttons = self.has_button_structure(options_frame)
+        has_green, has_red = self.has_result_colors(button_frames)
+        is_result_colors = has_green or has_red
 
-        is_quiz_layout = card_ok and buttons_ok
+        new_question_triggered = False
+        result_triggered = False
 
-        if not is_quiz_layout:
-            self.current_state = "IDLE"
-            self.last_active_hash = None
-            return QuestionEvent(
-                question_detected=False,
-                state="IDLE",
-                timestamp=now,
-                card_hash=current_hash,
-                change_delta=delta
-            )
+        # State Machine Transitions
+        if self.current_state in ("IDLE", "NEXT_QUESTION", "SAMPLE_VERIFICATION"):
+            # If buttons exist and no result colors are present -> active question!
+            if has_buttons and not is_result_colors:
+                self._transition("ACTIVE_QUESTION", now)
+                self.active_question_hash = current_hash
+                new_question_triggered = True
+                logger.info("Detector State: ACTIVE_QUESTION (Hash: %s, Sharpness: %.1f)", current_hash, sharpness)
 
-        # 3. Duplicate check and cooldown against active question
-        if self.last_active_hash is not None:
-            time_since_last = now - self.last_event_time
-            dist = self.hamming_distance(current_hash, self.last_active_hash)
+        elif self.current_state in ("ACTIVE_QUESTION", "ANSWER_RECOGNITION"):
+            # Check for result reveal: green/red button colors OR sudden sharpness jump
+            if is_result_colors or (sharpness > self.sharpness_threshold and delta > self.min_change_threshold):
+                self._transition("RESULT_REVEALED", now)
+                result_triggered = True
+                logger.info("Detector State: RESULT_REVEALED (Green: %s, Red: %s, Sharpness: %.1f)",
+                            has_green, has_red, sharpness)
+            else:
+                self.current_state = "ANSWER_RECOGNITION"
 
-            # Suppress repeat if within cooldown or if visual change is minimal
-            if time_since_last < self.cooldown_seconds or (delta < self.min_change_threshold and dist <= 12):
-                return QuestionEvent(
-                    question_detected=False,
-                    state="ACTIVE_QUIZ",
-                    timestamp=now,
-                    card_hash=current_hash,
-                    change_delta=delta,
-                    card_frame=card_frame,
-                    options_frame=options_frame,
-                    button_frames=button_frames
-                )
-
-        # 4. New Question Detected!
-        self.last_active_hash = current_hash
-        self.last_event_time = now
-        self.current_state = "ACTIVE_QUIZ"
-        logger.info("New quiz question detected! Hash: %s, Delta: %.2f", current_hash, delta)
+        elif self.current_state == "RESULT_REVEALED":
+            # Screen transition away from result screen
+            if not is_result_colors and (not has_buttons or delta > self.min_change_threshold):
+                self._transition("NEXT_QUESTION", now)
+                self.active_question_hash = None
+                logger.info("Detector State: NEXT_QUESTION (Round ended, awaiting next)")
 
         return QuestionEvent(
-            question_detected=True,
-            state="ACTIVE_QUIZ",
+            question_detected=new_question_triggered,
+            is_result_detected=result_triggered,
+            state=self.current_state,
             timestamp=now,
             card_hash=current_hash,
+            card_sharpness=sharpness,
             change_delta=delta,
             card_frame=card_frame,
             options_frame=options_frame,
-            button_frames=button_frames
+            button_frames=button_frames,
+            timer_frame=timer_frame
         )
 
-    def reset(self):
-        """Reset state tracking."""
-        self.last_card_gray = None
-        self.last_options_gray = None
-        self.last_active_hash = None
-        self.current_state = "IDLE"
+    def _transition(self, new_state: str, timestamp: float):
+        self.current_state = new_state
+        self.last_state_change_time = timestamp
 
+    def notify_sample_verified(self):
+        """Called by pipeline after sample verification finishes."""
+        if self.current_state == "RESULT_REVEALED":
+            self.current_state = "SAMPLE_VERIFICATION"
+
+    def reset(self):
+        self.current_state = "IDLE"
+        self.last_card_gray = None
+        self.last_card_hash = None
+        self.active_question_hash = None
