@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Anime Card Assistant — macOS Launch Script
+# Anime Card Assistant — Strict Offline macOS Launch Script
+# ==============================================================================
+# Runs the Anime Card Assistant completely offline.
+# Does NOT access the internet, run pip install, scrape data, or download weights.
+# If any required asset is missing, it halts and directs to ./prepare.sh.
 # ==============================================================================
 
 set -e
@@ -9,37 +13,66 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 echo "=================================================="
-echo "          ANIME CARD ASSISTANT (macOS)            "
+echo "      ANIME CARD ASSISTANT (OFFLINE LAUNCH)       "
 echo "=================================================="
 
-# 1. Virtual Environment Setup
+# 1. Virtual Environment Check
 if [ ! -d ".venv" ]; then
-    echo "==> Creating Python virtual environment in .venv..."
-    python3 -m venv .venv
+    echo "ERROR: Virtual environment .venv not found."
+    echo "Please run one-time setup first while connected to the internet:"
+    echo "    ./prepare.sh"
+    exit 1
 fi
 
 source .venv/bin/activate
 
-# 2. Check and install dependencies
-if ! python -c "import PySide6, torch, timm, cv2, mss, rapidfuzz, safetensors, Vision, Quartz" &> /dev/null; then
-    echo "==> Installing required packages from requirements.txt..."
-    pip install -r requirements.txt
+# 2. Dependency Check (Strictly Offline: No pip install)
+if ! python -c "import PySide6, torch, timm, cv2, mss, rapidfuzz, safetensors, Vision, Quartz" 2>/dev/null; then
+    echo "ERROR: Required Python packages are missing in .venv."
+    echo "Please run one-time preparation first while connected to the internet:"
+    echo "    ./prepare.sh"
+    exit 1
 fi
 
-# 3. Preflight: Dataset Check
+# 3. Preflight Check: Dataset Existence
 if [ ! -f "data/cards.json" ] || [ ! -f "data/cards.db" ]; then
-    echo "==> Card database missing. Collecting 286 card references..."
-    python scripts/collect_cards.py
+    echo "ERROR: Canonical card dataset not found in data/."
+    echo "Please run one-time preparation first while connected to the internet:"
+    echo "    ./prepare.sh"
+    exit 1
 fi
 
-# 4. Preflight: Precomputed Embeddings Check
+# 4. Preflight Check: Embeddings Existence
 if [ ! -f "models/embeddings/card_embeddings.npz" ]; then
-    echo "==> Generating synthetic blur variants and building precomputed embeddings..."
-    python scripts/generate_blurs.py
-    python scripts/build_embeddings.py
+    echo "ERROR: Precomputed card embeddings not found in models/embeddings/."
+    echo "Please run one-time preparation first while connected to the internet:"
+    echo "    ./prepare.sh"
+    exit 1
 fi
 
-# 5. Launch Main Application
-echo "==> Launching Anime Card Assistant..."
-exec python src/main.py "$@"
+# 5. Preflight Check: Local Model Checkpoint Existence
+if [ ! -f "models/dinov2/vit_small_patch14_dinov2.safetensors" ]; then
+    echo "ERROR: Local DINOv2 model checkpoint not found in models/dinov2/."
+    echo "Please run one-time preparation first while connected to the internet:"
+    echo "    ./prepare.sh"
+    exit 1
+fi
 
+# 6. Preflight Check: Local Manifest Verification (Strictly Offline)
+if ! python -c "
+import os
+os.environ['REQUIRE_OFFLINE'] = '1'
+from src.ai.model_manager import ModelManager
+m = ModelManager.get_instance(require_offline=True)
+if not m.is_offline_verified:
+    raise RuntimeError(m.verification_message)
+" 2>/dev/null; then
+    echo "ERROR: Local model manifest verification failed."
+    echo "Please run one-time preparation first while connected to the internet:"
+    echo "    ./prepare.sh"
+    exit 1
+fi
+
+# 7. Launch Main Application in Strict Offline Mode
+echo "==> Launching Anime Card Assistant in strict offline mode..."
+exec python src/main.py "$@"

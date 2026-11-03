@@ -55,6 +55,30 @@ class PerceptionEngine:
         self.locator = game_locator or GameLocator()
         self.option_reader = option_reader or OptionReader()
         self.sharpness_threshold = sharpness_threshold
+        self._last_options_hash: Optional[str] = None
+        self._cached_candidates: List[CandidateOption] = []
+
+    @staticmethod
+    def compute_options_hash(options_frame: Optional[np.ndarray]) -> str:
+        """Computes a fast 16x16 gradient hash to detect when option buttons change."""
+        if options_frame is None or options_frame.size == 0:
+            return ""
+        resized = cv2.resize(options_frame, (17, 16), interpolation=cv2.INTER_AREA)
+        gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY) if resized.ndim == 3 else resized
+        diff = gray[:, 1:] > gray[:, :-1]
+        return "".join(["1" if b else "0" for b in diff.flatten()])
+
+    @staticmethod
+    def hash_distance(h1: str, h2: str) -> int:
+        """Computes Hamming distance between two binary hashes."""
+        if not h1 or not h2 or len(h1) != len(h2):
+            return 999
+        return sum(c1 != c2 for c1, c2 in zip(h1, h2))
+
+    def reset_cache(self):
+        """Clears cached OCR candidate options."""
+        self._last_options_hash = None
+        self._cached_candidates = []
 
     def perceive_frame(
         self,
@@ -64,6 +88,7 @@ class PerceptionEngine:
         """
         Captures the current game state, crops subregions, and executes OCR.
         Uses supplied bundle if provided (e.g. for testing/mocking).
+        Reuses cached candidates while the options grid remains visually stable.
         """
         now = time.time()
         b = bundle if bundle is not None else self.capture.capture_quiz_bundle()
@@ -78,17 +103,33 @@ class PerceptionEngine:
         sharpness = compute_image_sharpness(card_frame) if card_frame is not None else 0.0
         is_unblurred = sharpness >= self.sharpness_threshold
 
+        # Check whether options grid has visually changed
+        opt_hash = self.compute_options_hash(options_frame)
+        grid_changed = (
+            self._last_options_hash is None or
+            self.hash_distance(opt_hash, self._last_options_hash) > 4 or
+            len(self._cached_candidates) < 4
+        )
+
         # Run OCR on 2x2 buttons
         candidates: List[CandidateOption] = []
         if run_ocr and button_frames and len(button_frames) == 4:
-            candidates = self.option_reader.read_options_from_buttons(button_frames, use_retry=False)
-            valid_count = sum(1 for c in candidates if c.is_valid and c.card_id is not None)
-            if valid_count < 4:
-                # Retry with alternative aggressive preprocessing
-                retry_candidates = self.option_reader.read_options_from_buttons(button_frames, use_retry=True)
-                retry_valid = sum(1 for c in retry_candidates if c.is_valid and c.card_id is not None)
-                if retry_valid > valid_count:
-                    candidates = retry_candidates
+            if not grid_changed and len(self._cached_candidates) == 4 and all(c.is_valid for c in self._cached_candidates):
+                # Reuse cached OCR candidates while grid remains visually stable
+                candidates = self._cached_candidates
+            else:
+                candidates = self.option_reader.read_options_from_buttons(button_frames, use_retry=False)
+                valid_count = sum(1 for c in candidates if c.is_valid and c.card_id is not None)
+                if valid_count < 4:
+                    # Retry with alternative aggressive preprocessing
+                    retry_candidates = self.option_reader.read_options_from_buttons(button_frames, use_retry=True)
+                    retry_valid = sum(1 for c in retry_candidates if c.is_valid and c.card_id is not None)
+                    if retry_valid > valid_count:
+                        candidates = retry_candidates
+
+                if len(candidates) == 4:
+                    self._cached_candidates = candidates
+                    self._last_options_hash = opt_hash
 
         # Timer numeric extraction
         timer_value: Optional[float] = None

@@ -13,6 +13,13 @@ from src.ai.model_manager import ModelManager
 from src.recognition.image_encoder import DINOv2Encoder
 
 
+@pytest.fixture(autouse=True)
+def reset_singleton():
+    ModelManager.reset_instance()
+    yield
+    ModelManager.reset_instance()
+
+
 def test_manifest_verification():
     manager = ModelManager.get_instance()
     is_ok, msg = manager.verify_manifest()
@@ -178,5 +185,74 @@ def test_manifest_incompatible_card_count(tmp_path):
     is_ok, msg = manager.verify_manifest()
     assert is_ok is False
     assert "incompatible embeddings card count" in msg.lower()
+
+
+def test_manifest_path_traversal_rejected(tmp_path):
+    """Verify that path traversal attempts in manifest.json are detected and blocked."""
+    fake_models_dir = tmp_path / "models"
+    fake_models_dir.mkdir(parents=True)
+
+    fake_manifest = {
+        "version": "1.0.0",
+        "models": {
+            "dinov2_small": {
+                "arch": "vit_small_patch14_dinov2.lvd142m",
+                "filename": "../../etc/passwd",
+                "sha256": "fake",
+                "expected_dimension": 384
+            }
+        }
+    }
+    with open(fake_models_dir / "manifest.json", "w") as f:
+        json.dump(fake_manifest, f)
+
+    manager = ModelManager(models_dir=fake_models_dir, require_offline=False)
+    is_ok, msg = manager.verify_manifest()
+    assert is_ok is False
+    assert "path traversal" in msg.lower()
+
+
+def test_manifest_architecture_mismatch(tmp_path):
+    """Verify that architecture specification mismatches are caught."""
+    fake_models_dir = tmp_path / "models"
+    fake_models_dir.mkdir(parents=True)
+
+    fake_manifest = {
+        "version": "1.0.0",
+        "models": {
+            "dinov2_small": {
+                "arch": "resnet50_incompatible",
+                "filename": "dinov2/weights.safetensors",
+                "sha256": "fake",
+                "expected_dimension": 384
+            }
+        }
+    }
+    with open(fake_models_dir / "manifest.json", "w") as f:
+        json.dump(fake_manifest, f)
+
+    manager = ModelManager(models_dir=fake_models_dir, require_offline=False)
+    is_ok, msg = manager.verify_manifest()
+    assert is_ok is False
+    assert "architecture mismatch" in msg.lower()
+
+
+def test_pipeline_no_fallback_to_pretrained_remote_weights(monkeypatch):
+    """Verify that QuizPipeline never falls back to remote pretrained weights when ModelManager fails."""
+    from src.core.pipeline import QuizPipeline
+
+    # Mock ModelManager.get_instance to fail verification
+    class FailingModelManager:
+        is_offline_verified = False
+        verification_message = "Mock checkpoint verification failure"
+
+    monkeypatch.setattr(ModelManager, "get_instance", lambda *args, **kwargs: FailingModelManager())
+
+    with pytest.raises(FileNotFoundError) as exc_info:
+        _ = QuizPipeline(auto_init_models=True)
+
+    assert "ModelManager offline verification failed" in str(exc_info.value)
+    assert "./prepare.sh" in str(exc_info.value)
+
 
 

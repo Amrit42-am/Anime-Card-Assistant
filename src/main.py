@@ -31,7 +31,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Anime Card Assistant — Roblox Card Clash Recognition System")
     parser.add_argument("--calibrate", action="store_true", help="Launch calibration dialog directly.")
     parser.add_argument("--headless", action="store_true", help="Run monitoring loop in terminal without GUI.")
-    parser.add_argument("--offline", action="store_true", help="Enforce strict offline execution with verified local model checkpoints.")
+    parser.add_argument("--offline", action="store_true", default=True, help="Enforce strict offline execution (default: strictly offline).")
     parser.add_argument("--model", type=str, default="dinov2", choices=["dinov2", "mobilenet"], help="Visual encoder model.")
     parser.add_argument("--fps", type=float, default=8.0, help="Target screen monitoring FPS.")
     return parser.parse_args()
@@ -40,27 +40,28 @@ def parse_args():
 def main():
     args = parse_args()
 
-    if args.offline:
-        os.environ["REQUIRE_OFFLINE"] = "1"
-        os.environ["HF_HUB_OFFLINE"] = "1"
-        os.environ["TRANSFORMERS_OFFLINE"] = "1"
-        from src.ai.model_manager import ModelManager
-        manager = ModelManager.get_instance(require_offline=True)
-        if not manager.is_offline_verified:
-            logger.error("Offline execution failed verification: %s. Please run: python scripts/download_models.py", manager.verification_message)
-            sys.exit(1)
-        logger.info("✓ Strict offline execution verified: local checkpoints and embeddings validated.")
+    # Normal gameplay is strictly offline by default
+    os.environ["REQUIRE_OFFLINE"] = "1"
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
+    from src.ai.model_manager import ModelManager
+    manager = ModelManager.get_instance(require_offline=True)
+    if not manager.is_offline_verified:
+        logger.error("Offline execution failed verification: %s. Please run: ./prepare.sh", manager.verification_message)
+        sys.exit(1)
+    logger.info("✓ Strict offline execution verified: local checkpoints and embeddings validated.")
 
     # Preflight check for card dataset and embeddings
     cards_json = Path("data/cards.json")
     embeddings_npz = Path("models/embeddings/card_embeddings.npz")
 
     if not cards_json.exists():
-        logger.error("Dataset not found at %s. Please run: python scripts/collect_cards.py", cards_json)
+        logger.error("Dataset not found at %s. Please run: ./prepare.sh", cards_json)
         sys.exit(1)
 
     if not embeddings_npz.exists():
-        logger.error("Embeddings not found at %s. Please run: python scripts/build_embeddings.py", embeddings_npz)
+        logger.error("Embeddings not found at %s. Please run: ./prepare.sh", embeddings_npz)
         sys.exit(1)
 
     # Lazy import heavy Qt & Pipeline modules after argument parsing
@@ -119,7 +120,7 @@ def main():
     pipeline = QuizPipeline(encoder_name=args.model)
 
     # Launch floating assistant overlay
-    overlay = FloatingOverlay(pipeline=pipeline, is_offline=args.offline)
+    overlay = FloatingOverlay(pipeline=pipeline, is_offline=pipeline.is_offline_verified)
     overlay.show()
     overlay.raise_()
     overlay.activateWindow()

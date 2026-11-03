@@ -48,7 +48,7 @@ REPORT_PATH = Path("data/benchmark_report.json")
 
 def apply_independent_blur(img: np.ndarray, distortion_type: str) -> np.ndarray:
     """
-    Generates fresh, un-cached blur transformations with jittered parameters
+    Generates fresh, un-cached blur and distortion transformations with jittered parameters
     never stored in the reference embedding database.
     """
     if distortion_type == "gaussian_jitter":
@@ -64,9 +64,21 @@ def apply_independent_blur(img: np.ndarray, distortion_type: str) -> np.ndarray:
         kernel[int((size - 1) / 2), :] = np.ones(size)
         kernel = kernel / size
         return cv2.filter2D(img, -1, kernel)
+    elif distortion_type == "downsampling":
+        h, w = img.shape[:2]
+        factor = random.choice([0.4, 0.5, 0.6])
+        small = cv2.resize(img, (max(8, int(w * factor)), max(8, int(h * factor))), interpolation=cv2.INTER_AREA)
+        return cv2.resize(small, (w, h), interpolation=cv2.INTER_CUBIC)
+    elif distortion_type == "compression_artifacts":
+        quality = random.choice([20, 25, 30])
+        _, enc = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])
+        return cv2.imdecode(enc, cv2.IMREAD_COLOR)
+    elif distortion_type == "contrast_brightness_shift":
+        alpha = random.uniform(0.8, 1.25)
+        beta = random.uniform(-25.0, 25.0)
+        return np.clip(img.astype(np.float32) * alpha + beta, 0, 255).astype(np.uint8)
     elif distortion_type == "compound_noise":
         blurred = cv2.GaussianBlur(img, (33, 33), 11.0)
-        # Add slight Gaussian noise and brightness jitter
         noise = np.random.normal(0, 8, img.shape).astype(np.float32)
         jittered = np.clip(blurred.astype(np.float32) * random.uniform(0.9, 1.1) + noise, 0, 255).astype(np.uint8)
         return jittered
@@ -76,9 +88,13 @@ def apply_independent_blur(img: np.ndarray, distortion_type: str) -> np.ndarray:
 
 def evaluate_synthetic_blurs(cards, matcher, encoder, num_cards: int = 50):
     logger.info("Evaluating Group 1: Independent Synthetic Blurs (no data leakage)...")
-    distortions = ["gaussian_jitter", "box_jitter", "motion_blur", "compound_noise"]
+    distortions = [
+        "gaussian_jitter", "box_jitter", "motion_blur",
+        "downsampling", "compression_artifacts", "contrast_brightness_shift", "compound_noise"
+    ]
     random.seed(1337)
-    sampled_indices = random.sample(range(len(cards)), min(num_cards, len(cards)))
+    valid_cards = [c for c in cards if Path(c.get("image", "")).exists()]
+    sampled_indices = random.sample(range(len(valid_cards)), min(num_cards, len(valid_cards)))
 
     total_evals = 0
     top1_correct = 0
@@ -88,15 +104,16 @@ def evaluate_synthetic_blurs(cards, matcher, encoder, num_cards: int = 50):
     per_distortion_total = {d: 0 for d in distortions}
 
     for idx in sampled_indices:
-        target_card = cards[idx]
+        target_card = valid_cards[idx]
         target_name = target_card["name"]
         card_img = cv2.imread(target_card["image"])
         if card_img is None:
             continue
 
         # 3 random distractors
-        distractors = random.sample([i for i in range(len(cards)) if i != idx], 3)
-        candidate_names = [target_name] + [cards[i]["name"] for i in distractors]
+        distractor_pool = [i for i in range(len(valid_cards)) if i != idx]
+        distractors = random.sample(distractor_pool, 3)
+        candidate_names = [target_name] + [valid_cards[i]["name"] for i in distractors]
         random.shuffle(candidate_names)
 
         for d_type in distortions:
@@ -121,6 +138,7 @@ def evaluate_synthetic_blurs(cards, matcher, encoder, num_cards: int = 50):
 
     return {
         "total_evaluations": total_evals,
+        "valid_cards_sampled": len(sampled_indices),
         "top1_accuracy_percent": round((top1_correct / total_evals) * 100.0, 2) if total_evals else 0.0,
         "top2_accuracy_percent": round((top2_correct / total_evals) * 100.0, 2) if total_evals else 0.0,
         "avg_latency_ms": round(float(np.mean(latencies)), 2) if latencies else 0.0,
@@ -248,24 +266,29 @@ def evaluate_unseen_cards(cards, matcher, encoder, num_held_out: int = 20):
     }
 
 
-def benchmark_mode_a_replay(cards, num_questions: int = 25):
+def benchmark_mode_a_replay(cards, num_questions: int = 20):
     """
     Mode A — Replay benchmark:
     Uses independently labelled gameplay bundles and feeds them through the actual
     QuizPipeline.step() execution with deterministic dependencies.
     Measures complete pipeline execution and component breakdown.
+    Does NOT count uncertain predictions as successful matches.
     """
     logger.info("Executing Mode A: Replay Benchmark on Live QuizPipeline.step()...")
     pipeline = QuizPipeline(auto_init_models=True)
     random.seed(42)
 
-    sampled = random.sample(range(len(cards)), min(num_questions, len(cards)))
+    valid_cards = [c for c in cards if Path(c.get("image", "")).exists()]
+    sampled = random.sample(range(len(valid_cards)), min(num_questions, len(valid_cards)))
     top1_correct = 0
     top2_correct = 0
     uncertain_count = 0
     false_positives = 0
     temporal_agreements = []
     step_times = []
+    provisional_times = []
+    stabilization_times = []
+    failure_details = []
 
     comp_capture = []
     comp_locate = []
@@ -276,23 +299,29 @@ def benchmark_mode_a_replay(cards, num_questions: int = 25):
     comp_temporal = []
     comp_confidence = []
 
-    for idx in sampled:
-        target = cards[idx]
+    for q_idx, idx in enumerate(sampled, 1):
+        target = valid_cards[idx]
         target_name = target["name"]
+        cid = target["id"]
         card_img = cv2.imread(target["image"])
         if card_img is None:
             continue
 
         # 3 distractors
-        distractors = random.sample([i for i in range(len(cards)) if i != idx], 3)
-        candidate_names = [target_name] + [cards[i]["name"] for i in distractors]
+        distractor_pool = [i for i in range(len(valid_cards)) if i != idx]
+        distractors = random.sample(distractor_pool, 3)
+        candidate_names = [target_name] + [valid_cards[i]["name"] for i in distractors]
         random.shuffle(candidate_names)
 
         blurred_card = cv2.GaussianBlur(card_img, (35, 35), 12.0)
         btn_frames = []
         for name in candidate_names:
-            btn = np.ones((60, 140, 3), dtype=np.uint8) * 40
-            cv2.putText(btn, name, (8, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
+            btn = np.ones((60, 260, 3), dtype=np.uint8) * 40
+            scale = 0.65
+            t_w = cv2.getTextSize(name, cv2.FONT_HERSHEY_SIMPLEX, scale, 2)[0][0]
+            if t_w > 240:
+                scale = scale * (240.0 / t_w)
+            cv2.putText(btn, name, (10, 38), cv2.FONT_HERSHEY_SIMPLEX, scale, (255, 255, 255), 2)
             btn_frames.append(btn)
         top_row = np.hstack([btn_frames[0], btn_frames[1]])
         bot_row = np.hstack([btn_frames[2], btn_frames[3]])
@@ -333,8 +362,8 @@ def benchmark_mode_a_replay(cards, num_questions: int = 25):
         _ = pipeline.confidence_engine.evaluate(top_score=0.9, runner_up_score=0.6)
         comp_confidence.append((time.perf_counter() - t0) * 1000.0)
 
-        # Run through actual pipeline.step()
-        pipeline.detector.reset()
+        # Reset pipeline state before evaluating test question
+        pipeline.reset()
         orig_capture = pipeline.capture.capture_quiz_bundle
         pipeline.capture.capture_quiz_bundle = lambda *args, **kwargs: mock_bundle
 
@@ -343,28 +372,53 @@ def benchmark_mode_a_replay(cards, num_questions: int = 25):
             t_step0 = time.perf_counter()
             ans1, _ = pipeline.step()
             t_step1 = time.perf_counter()
-            step_times.append((t_step1 - t_step0) * 1000.0)
+            prov_ms = (t_step1 - t_step0) * 1000.0
+            step_times.append(prov_ms)
+            provisional_times.append(prov_ms)
 
             # Step 2: Consecutive Frame (Multi-Frame Temporal Stabilization)
             t_temp0 = time.perf_counter()
             ans2, _ = pipeline.step()
-            comp_temporal.append((time.perf_counter() - t_temp0) * 1000.0)
+            t_temp1 = time.perf_counter()
+            stab_ms = (t_temp1 - t_temp0) * 1000.0
+            comp_temporal.append(stab_ms)
+            stabilization_times.append(stab_ms)
 
             final_ans = ans2 or ans1
+            is_top1 = bool(final_ans and final_ans.card_name == target_name and final_ans.status == "matched")
+            is_top2 = bool(is_top1 or (final_ans and final_ans.status == "matched" and final_ans.runner_up_name == target_name))
+
             if final_ans:
                 temporal_agreements.append(final_ans.temporal_agreement)
-                is_correct = (final_ans.card_name == target_name)
-                if is_correct:
+
+                if is_top1:
                     top1_correct += 1
                     top2_correct += 1
                 else:
-                    if final_ans.runner_up_name == target_name:
+                    if is_top2:
                         top2_correct += 1
                     if final_ans.status == "matched":
                         false_positives += 1
 
                 if final_ans.status == "uncertain":
                     uncertain_count += 1
+
+                if not is_top1:
+                    failure_details.append({
+                        "question_index": q_idx,
+                        "ground_truth_name": target_name,
+                        "ground_truth_id": cid,
+                        "predicted_card": final_ans.card_name,
+                        "runner_up_card": final_ans.runner_up_name,
+                        "margin": final_ans.margin,
+                        "confidence": final_ans.confidence,
+                        "status": final_ans.status,
+                        "stage": final_ans.prediction_stage,
+                        "temporal_agreement": final_ans.temporal_agreement,
+                        "candidates": candidate_names,
+                        "failure_category": "uncertain_prediction" if final_ans.status == "uncertain" else "misclassification",
+                        "explanation": final_ans.explanation
+                    })
         finally:
             pipeline.capture.capture_quiz_bundle = orig_capture
 
@@ -388,15 +442,21 @@ def benchmark_mode_a_replay(cards, num_questions: int = 25):
             "max_ms": round(float(np.max(arr)), 2)
         }
 
-    total_q = len(sampled)
+    valid_q = len(sampled)
     return {
         "mode": "Mode A (Replay Pipeline Benchmark)",
-        "questions_evaluated": total_q,
-        "top1_accuracy_percent": round((top1_correct / total_q) * 100.0, 2) if total_q else 0.0,
-        "top2_accuracy_percent": round((top2_correct / total_q) * 100.0, 2) if total_q else 0.0,
-        "uncertain_rate_percent": round((uncertain_count / total_q) * 100.0, 2) if total_q else 0.0,
-        "false_positive_rate_percent": round((false_positives / total_q) * 100.0, 2) if total_q else 0.0,
+        "input_type": "simulated_replayed_capture",
+        "questions_evaluated": valid_q,
+        "top1_accuracy_percent": round((top1_correct / valid_q) * 100.0, 2) if valid_q else 0.0,
+        "top2_accuracy_percent": round((top2_correct / valid_q) * 100.0, 2) if valid_q else 0.0,
+        "uncertain_rate_percent": round((uncertain_count / valid_q) * 100.0, 2) if valid_q else 0.0,
+        "false_positive_rate_percent": round((false_positives / valid_q) * 100.0, 2) if valid_q else 0.0,
         "avg_temporal_agreement": round(float(np.mean(temporal_agreements)), 3) if temporal_agreements else 1.0,
+        "timing_breakdown": {
+            "first_provisional_prediction": stats(provisional_times),
+            "subsequent_stabilization_frame": stats(stabilization_times),
+            "simulated_display_capture": stats(comp_capture)
+        },
         "e2e_pipeline_step_latency": stats(step_times),
         "component_latencies": {
             "1_display_capture": stats(comp_capture),
@@ -407,7 +467,8 @@ def benchmark_mode_a_replay(cards, num_questions: int = 25):
             "6_candidate_matching": stats(comp_match),
             "7_temporal_reasoning": stats(comp_temporal),
             "8_confidence_evaluation": stats(comp_confidence)
-        }
+        },
+        "detailed_failures": failure_details
     }
 
 
@@ -449,10 +510,8 @@ def run_comprehensive_evaluation(num_cards: int = 30, encoder_name: str = "dinov
         cards = json.load(f)
 
     matcher = ImageMatcher()
-    try:
-        encoder = ModelManager.get_instance().get_encoder()
-    except Exception:
-        encoder = get_image_encoder(encoder_name)
+    manager = ModelManager.get_instance(require_offline=True)
+    encoder = manager.get_encoder()
 
     synthetic_report = evaluate_synthetic_blurs(cards, matcher, encoder, num_cards=num_cards)
     real_gameplay_report = evaluate_real_gameplay_images(cards, matcher, encoder)
@@ -464,6 +523,8 @@ def run_comprehensive_evaluation(num_cards: int = 30, encoder_name: str = "dinov
     full_report = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "model": encoder_name,
+        "offline_integrity_verified": manager.is_offline_verified,
+        "verification_message": manager.verification_message,
         "data_leakage_prevented": True,
         "mode_a_replay_benchmark": replay_benchmark,
         "mode_b_live_benchmark": live_benchmark,

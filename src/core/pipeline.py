@@ -80,13 +80,14 @@ class QuizPipeline:
         self.result_detector = ResultDetector(option_reader=self.option_reader)
 
         if auto_init_models:
-            # Load local offline vision encoder
-            try:
-                self.model_manager = ModelManager.get_instance()
-                self.encoder: BaseImageEncoder = self.model_manager.get_encoder()
-            except Exception as e:
-                logger.warning("ModelManager initialization notice (%s), falling back to get_image_encoder", e)
-                self.encoder: BaseImageEncoder = get_image_encoder(encoder_name)
+            # Strictly load verified local offline vision encoder
+            self.model_manager = ModelManager.get_instance(require_offline=True)
+            if not self.model_manager.is_offline_verified:
+                raise FileNotFoundError(
+                    f"ModelManager offline verification failed: {self.model_manager.verification_message}. "
+                    "Please run: ./prepare.sh"
+                )
+            self.encoder: BaseImageEncoder = self.model_manager.get_encoder()
 
             self.matcher = ImageMatcher()
             self.memory = BlurMemorySystem(encoder=self.encoder)
@@ -425,3 +426,23 @@ class QuizPipeline:
         logger.info("Saved manual correction into memory: %s (#%d), Sample %s",
                     correct_canonical, correct_id, sid)
         return sid
+
+    @property
+    def is_offline_verified(self) -> bool:
+        """Returns True only when ModelManager successfully verified local checkpoints and embeddings."""
+        if self.model_manager is not None:
+            return bool(self.model_manager.is_offline_verified)
+        return False
+
+    def reset(self):
+        """Resets the pipeline, detectors, context sessions, and perception caches."""
+        self.state = "SEARCHING"
+        self.current_candidates = []
+        self.current_session_id = None
+        self.last_result = None
+        self.detector.reset()
+        self.context_analyzer.reset()
+        self.temporal_analyzer.reset()
+        if hasattr(self.perception_engine, "reset_cache"):
+            self.perception_engine.reset_cache()
+

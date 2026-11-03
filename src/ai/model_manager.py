@@ -62,7 +62,7 @@ class ModelManager:
         if self.require_offline and not self.is_offline_verified:
             raise FileNotFoundError(
                 f"ModelManager offline verification failed: {self.verification_message}. "
-                "Please run: python scripts/download_models.py"
+                "Please run: ./prepare.sh"
             )
 
         logger.info("Initializing offline ModelManager on device: %s (%s)",
@@ -76,7 +76,24 @@ class ModelManager:
             require_offline=self.require_offline
         )
 
+        expected_dim = 384
+        if self._encoder.dimension != expected_dim:
+            raise ValueError(
+                f"Encoder output dimension mismatch: got {self._encoder.dimension}, expected {expected_dim}"
+            )
+
         self._initialized = True
+
+    @staticmethod
+    def _validate_safe_path(base_dir: Path, rel_path_str: str) -> Path:
+        """Ensures that a path does not escape base_dir via directory traversal."""
+        base_resolved = base_dir.resolve()
+        target_resolved = (base_dir / rel_path_str).resolve()
+        try:
+            target_resolved.relative_to(base_resolved)
+        except ValueError:
+            raise ValueError(f"Path traversal detected: '{rel_path_str}' escapes '{base_dir}'")
+        return target_resolved
 
     @staticmethod
     def compute_sha256(filepath: Path) -> str:
@@ -106,7 +123,16 @@ class ModelManager:
             if not dinov2_spec:
                 return False, "dinov2_small spec missing in manifest"
 
-            model_path = dir_to_check / dinov2_spec["filename"]
+            # Check expected architecture if specified
+            expected_arch = dinov2_spec.get("arch")
+            if expected_arch and expected_arch != self.model_name:
+                return False, f"Architecture mismatch: manifest expects '{expected_arch}', got '{self.model_name}'"
+
+            try:
+                model_path = self._validate_safe_path(dir_to_check, dinov2_spec["filename"])
+            except ValueError as ve:
+                return False, str(ve)
+
             if not model_path.exists():
                 return False, f"Model file missing at {model_path}"
 
@@ -127,27 +153,31 @@ class ModelManager:
             # Check embeddings file
             emb_spec = manifest.get("embeddings")
             if emb_spec:
-                emb_path = dir_to_check / emb_spec["filename"]
+                try:
+                    emb_path = self._validate_safe_path(dir_to_check, emb_spec["filename"])
+                except ValueError as ve:
+                    return False, str(ve)
+
                 if not emb_path.exists():
                     return False, f"Embeddings file missing at {emb_path}"
 
-                # Verify embedding dimension and card count
-                data = np.load(emb_path, allow_pickle=True)
-                clean_emb = data["clean_embeddings"]
+                # Verify embedding dimension and card count with proper resource closure
+                with np.load(emb_path, allow_pickle=True) as data:
+                    clean_emb = data["clean_embeddings"]
 
-                expected_cards = emb_spec.get("expected_cards", 286)
-                if clean_emb.shape[0] != expected_cards:
-                    return False, (
-                        f"Incompatible embeddings card count ({clean_emb.shape[0]}), "
-                        f"expected {expected_cards}"
-                    )
+                    expected_cards = emb_spec.get("expected_cards", 286)
+                    if clean_emb.shape[0] != expected_cards:
+                        return False, (
+                            f"Incompatible embeddings card count ({clean_emb.shape[0]}), "
+                            f"expected {expected_cards}"
+                        )
 
-                expected_dim = emb_spec.get("dimension", 384)
-                if clean_emb.shape[1] != expected_dim:
-                    return False, (
-                        f"Incompatible embeddings dimension ({clean_emb.shape[1]}), "
-                        f"expected {expected_dim}"
-                    )
+                    expected_dim = emb_spec.get("dimension", 384)
+                    if clean_emb.shape[1] != expected_dim:
+                        return False, (
+                            f"Incompatible embeddings dimension ({clean_emb.shape[1]}), "
+                            f"expected {expected_dim}"
+                        )
 
             return True, "All model checkpoints and embeddings verified locally"
         except Exception as e:

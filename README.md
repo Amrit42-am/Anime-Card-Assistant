@@ -97,36 +97,34 @@ anime-card-assistant/
 
 ## ⚡ Quickstart
 
-### 1. Two Startup Modes: Online Setup vs Completely Offline Execution
+### 1. Two Explicit Operations: Online Preparation vs Strict Offline Launch
 
-The assistant requires a one-time preparation step to download canonical card references and local model checkpoints, after which it operates **100% offline**:
+The assistant strictly separates one-time online preparation from everyday offline gameplay:
 
 #### A. One-Time Setup (Online)
+Run the preparation script while internet access is available. It builds the Python virtual environment, installs dependencies, fetches canonical card references, generates embeddings, and downloads the approved DINOv2 model checkpoint (`vit_small_patch14_dinov2.safetensors`):
 ```bash
 # Clone the repository
 git clone https://github.com/Amrit42-am/Anime-Card-Assistant.git
 cd Anime-Card-Assistant
 
-# Create and activate virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-
-# Download model checkpoints and verify offline manifest
-python scripts/download_models.py
+# Run explicit one-time preparation
+chmod +x prepare.sh
+./prepare.sh
 ```
 
-#### B. Autonomous Execution (Completely Offline)
-You can disconnect the internet or use `--offline` mode. No network calls or downloads will occur:
-```bash
-python src/main.py --offline
-```
-
-Alternatively, run the automated launcher:
+#### B. Normal Gameplay Launch (Strictly Offline by Default)
+Once prepared, normal gameplay is **100% offline by default**. No internet connection is accessed. The launcher verifies dependencies, card datasets, model checkpoints, and SHA256 manifests locally without network calls:
 ```bash
 chmod +x launch.sh
 ./launch.sh
 ```
+Or directly via Python (strictly offline by default):
+```bash
+source .venv/bin/activate
+python src/main.py
+```
+*(The `--offline` CLI flag is retained for backwards compatibility, but is now enforced by default).*
 
 ---
 
@@ -163,28 +161,31 @@ Evaluated across four distinct independent groups and a live `QuizPipeline.step(
 
 | Evaluation Mode / Group | Metric | Measured Result | Status |
 |---|---|---|---|
-| **Mode A: Replay Pipeline Benchmark** | Top-1 End-to-End Accuracy | **85.00%** (17/20) | ✅ PASSED |
+| **Mode A: Replay Pipeline Benchmark** | Top-1 End-to-End Accuracy | **95.00%** (19/20) | ✅ PASSED |
 | | False Positive Rate | **0.00%** (0/20) | ✅ PASSED |
-| | End-to-End Step Latency (Median p50) | **68.52 ms** | ✅ PASSED (<100ms) |
-| | End-to-End Step Latency (p95) | **88.08 ms** | ✅ PASSED (<100ms) |
+| | Uncertain Flagging Rate | **5.00%** (1/20) | ✅ CONSERVATIVE |
+| | Provisional Prediction Latency ($p_{50}$) | **63.04 ms** | ✅ PASSED (<100ms) |
+| | Provisional Prediction Latency ($p_{95}$) | **93.43 ms** | ✅ PASSED (<100ms) |
+| | Subsequent Frame Latency ($p_{50}$) | **24.49 ms** | ✅ OPTIMIZED (OCR Reuse) |
 | | Average Temporal Agreement | **1.00** | ✅ PASSED |
-| **1. Independent Synthetic Blurs** | Top-1 Accuracy (Jittered Kernel & Noise) | **100.00%** (120/120) | ✅ PASSED |
-| | Top-2 Accuracy | **100.00%** (120/120) | ✅ PASSED |
-| | Average Inference Latency | **20.37 ms** | ✅ PASSED (<500ms) |
-| | 95th-Percentile Latency | **21.88 ms** | ✅ PASSED (<1000ms) |
+| **1. Independent Synthetic Blurs** | Top-1 Accuracy across 7 Distortion Types | **100.00%** (210/210) | ✅ PASSED |
+| | Top-2 Accuracy | **100.00%** (210/210) | ✅ PASSED |
+| | Average Inference Latency | **20.89 ms** | ✅ PASSED (<500ms) |
+| | 95th-Percentile Latency | **23.17 ms** | ✅ PASSED (<1000ms) |
 | **2. Real Roblox Blur Images** | Top-1 Accuracy on Verified Gameplay Samples | **100.00%** (3/3) | ✅ MEASURED |
 | **3. Held-out Unseen Cards** | Correct Rejection / Uncertainty Flagging | **100.00%** (15/15) | ✅ PASSED |
 | **Mode B: Live Gameplay Benchmark** | Safe Live Roblox Detection & Zero Disk Capture | *Active Window Dependent* | ✅ NON-BLOCKING |
 
-### Live Pipeline Step Latency Breakdown (Mode A Replay):
-- **1. Display Capture:** p50: **20.24 ms**, p95: **34.73 ms**
-- **2. Game Localization:** p50: **0.77 ms**, p95: **2.24 ms**
-- **3. Perception Preprocessing:** p50: **21.80 ms**, p95: **43.44 ms**
-- **4. Native OCR Extraction:** p50: **17.57 ms**, p95: **31.15 ms**
-- **5. DINOv2 Visual Encoder:** p50: **20.69 ms**, p95: **23.24 ms**
-- **6. Candidate Matching:** p50: **0.09 ms**, p95: **0.15 ms**
-- **7. Temporal Reasoning:** p50: **45.93 ms**, p95: **61.94 ms**
-- **Total Pipeline Step (E2E):** **p50: 68.52 ms, p95: 88.08 ms** (Sub-100ms guaranteed!)
+### End-to-End Latency Breakdown:
+- **Display Capture (Simulated Replay):** $p_{50}$: **19.08 ms**, $p_{95}$: **34.84 ms**
+- **Game Localization:** $p_{50}$: **0.78 ms**, $p_{95}$: **2.69 ms**
+- **Perception Preprocessing:** $p_{50}$: **21.42 ms**, $p_{95}$: **51.21 ms**
+- **Native Apple Vision OCR:** $p_{50}$: **18.34 ms**, $p_{95}$: **20.49 ms** (Cached across visually stable frames)
+- **DINOv2 Visual Encoder:** $p_{50}$: **20.11 ms**, $p_{95}$: **21.36 ms**
+- **Candidate Matching:** $p_{50}$: **0.08 ms**, $p_{95}$: **0.12 ms**
+- **Temporal Reasoning:** $p_{50}$: **24.49 ms**, $p_{95}$: **25.90 ms**
+- **Initial Provisional Step (E2E):** **$p_{50}$: 63.04 ms, $p_{95}$: 93.43 ms** (Sub-100ms guaranteed!)
+- **Subsequent Stabilization Frame (E2E):** **$p_{50}$: 24.49 ms, $p_{95}$: 25.90 ms**
 
 Run the benchmark suite at any time:
 ```bash
@@ -201,15 +202,15 @@ Run the full pytest suite:
 pytest -v
 ```
 
-Results: **65 passed in ~7.2s with zero warnings**
-- `tests/test_offline_mode.py` (7 tests): Cryptographic SHA256 verification, local safetensors checkpoint loading, file size & dimension checks, failure handling without network.
+Results: **69 passed in ~8.9s with zero warnings**
+- `tests/test_offline_mode.py` (10 tests): Cryptographic SHA256 verification, path traversal prevention, architecture mismatch detection, local safetensors checkpoint loading, file size & dimension checks, failure handling without network, no fallback to pretrained remote weights.
 - `tests/test_advanced_ai.py` (11 tests): Confidence engine multi-factor calibration, temporal voting & timer tracking, candidate reasoner candidate restriction rules, context state machine transitions, adaptive learning.
 - `tests/test_capture_window.py` (8 tests): Display enumeration, frame capture, Quartz window movement, window resize, multi-monitor and negative coordinates, permission checks.
 - `tests/test_dataset.py` (4 tests): 286 card records, non-empty files, SQLite schema consistency.
 - `tests/test_recognition.py` (5 tests): DINOv2 embedding dimensionality, L2 normalization, independent image queries, non-cached blur transformations, margin evaluation.
 - `tests/test_ocr.py` (6 tests): macOS Apple Vision OCR, noisy prefix cleaning, multiline card names, fuzzy database resolution.
 - `tests/test_memory.py` (5 tests): Confirmed sample saving, candidate-restricted retrieval, memory correction, sample invalidation.
-- `tests/test_integration.py` (8 tests): End-to-end 2×2 screen capture bundle processing, candidate matching, confirmation persistence, Advanced AI module wiring, PerceptionEngine single-OCR consumption, contradictory evidence confidence penalty, complete lifecycle state transitions.
+- `tests/test_integration.py` (9 tests): End-to-end 2×2 screen capture bundle processing, candidate matching, confirmation persistence, Advanced AI module wiring, PerceptionEngine single-OCR consumption, contradictory evidence confidence penalty, complete lifecycle state transitions, PerceptionEngine OCR cache and refresh on visual grid change.
 - `tests/test_result_learning.py` (11 tests): All four 2×2 button positions (TL, TR, BL, BR), OCR retry across result frames, separate disagreement logging, timeout expiration, result banner region separation, headless mode tuple handling.
 
 ---

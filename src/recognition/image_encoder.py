@@ -92,7 +92,7 @@ class DINOv2Encoder(BaseImageEncoder):
         model_name: str = "vit_small_patch14_dinov2.lvd142m",
         device: str = None,
         weights_path: Optional[Path] = None,
-        require_offline: bool = False
+        require_offline: bool = True
     ):
         super().__init__(device=device)
         import timm
@@ -111,13 +111,13 @@ class DINOv2Encoder(BaseImageEncoder):
 
             from safetensors.torch import load_file
             state_dict = load_file(str(target_weights))
-            self.model.load_state_dict(state_dict)
+            self.model.load_state_dict(state_dict, strict=True)
             logger.info("Successfully loaded offline DINOv2 weights from local safetensors checkpoint.")
         else:
-            if require_offline or os.environ.get("REQUIRE_OFFLINE", "0") == "1":
+            if require_offline or os.environ.get("REQUIRE_OFFLINE", "1") == "1":
                 raise FileNotFoundError(
                     f"Offline execution requirement failed: local model checkpoint not found at {target_weights}. "
-                    "Please run: python scripts/download_models.py"
+                    "Please run: ./prepare.sh or python scripts/download_models.py"
                 )
             logger.warning("Local checkpoint %s not found. Loading via timm cache...", target_weights)
             self.model = timm.create_model(
@@ -135,6 +135,8 @@ class DINOv2Encoder(BaseImageEncoder):
             T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         self._dim = self.model.num_features
+        if "vit_small" in model_name and self._dim != 384:
+            raise ValueError(f"DINOv2 encoder output dimension {self._dim} != expected 384")
 
     @property
     def dimension(self) -> int:

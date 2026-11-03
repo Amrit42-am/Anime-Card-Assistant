@@ -16,11 +16,15 @@ from src.capture.region_manager import CalibrationConfig
 from src.core.pipeline import QuizPipeline
 from src.core.decision_engine import AnswerResult
 from src.ai.context_analyzer import QuizState
+from src.ai.model_manager import ModelManager
 
 
 @pytest.fixture(scope="module")
 def pipeline():
-    return QuizPipeline(auto_init_models=True)
+    ModelManager.reset_instance()
+    p = QuizPipeline(auto_init_models=True)
+    yield p
+    ModelManager.reset_instance()
 
 
 def create_mock_quiz_frame(card_name: str, options: list[str]) -> dict:
@@ -409,5 +413,44 @@ def test_complete_quiz_lifecycle_state_machine(pipeline):
     pipeline.capture.capture_quiz_bundle = orig_capture
     if report_result and report_result.sample_id:
         pipeline.memory.invalidate_sample(report_result.sample_id)
+
+
+def test_perception_engine_ocr_cache_and_refresh(pipeline, monkeypatch):
+    """
+    Verifies that PerceptionEngine caches candidates when the options grid remains stable,
+    and refreshes/re-runs OCR when the candidate options change.
+    """
+    options_a = ["Green Bomber", "Harmonious Soul", "Shadow Duelist", "Soul King"]
+    bundle_a = create_mock_quiz_frame("Green Bomber", options_a)
+
+    options_b = ["Celestial Warrior", "Harmonious Soul", "Shadow Duelist", "Soul King"]
+    bundle_b = create_mock_quiz_frame("Celestial Warrior", options_b)
+
+    pipeline.perception_engine.reset_cache()
+
+    ocr_call_count = {"count": 0}
+    orig_read = pipeline.option_reader.read_options_from_buttons
+
+    def counting_read(*args, **kwargs):
+        ocr_call_count["count"] += 1
+        return orig_read(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline.option_reader, "read_options_from_buttons", counting_read)
+
+    # 1. Frame 1 with bundle_a: Initial OCR run
+    p1 = pipeline.perception_engine.perceive_frame(bundle=bundle_a)
+    assert ocr_call_count["count"] >= 1
+    initial_calls = ocr_call_count["count"]
+
+    # 2. Frame 2 with identical bundle_a: Grid is visually stable, OCR must be cached!
+    p2 = pipeline.perception_engine.perceive_frame(bundle=bundle_a)
+    assert ocr_call_count["count"] == initial_calls, "OCR should not re-run when options grid is visually stable"
+    assert [c.canonical_name for c in p2.ocr_candidates] == [c.canonical_name for c in p1.ocr_candidates]
+
+    # 3. Frame 3 with bundle_b: Options grid visually changed, OCR must refresh!
+    p3 = pipeline.perception_engine.perceive_frame(bundle=bundle_b)
+    assert ocr_call_count["count"] > initial_calls, "OCR must re-run when options grid changes"
+    assert "Celestial Warrior" in [c.canonical_name for c in p3.ocr_candidates]
+
 
 

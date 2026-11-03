@@ -1,63 +1,86 @@
 {
-  "timestamp": "2026-11-03T22:57:22Z",
+  "timestamp": "2026-11-03T23:20:14Z",
   "model": "dinov2",
+  "offline_integrity_verified": true,
+  "verification_message": "All model checkpoints and embeddings verified locally",
   "data_leakage_prevented": true,
   "mode_a_replay_benchmark": {
     "mode": "Mode A (Replay Pipeline Benchmark)",
+    "input_type": "simulated_replayed_capture",
     "questions_evaluated": 20,
-    "top1_accuracy_percent": 85.0,
-    "top2_accuracy_percent": 85.0,
-    "uncertain_rate_percent": 20.0,
+    "top1_accuracy_percent": 95.0,
+    "top2_accuracy_percent": 95.0,
+    "uncertain_rate_percent": 5.0,
     "false_positive_rate_percent": 0.0,
     "avg_temporal_agreement": 1.0,
+    "timing_breakdown": {
+      "first_provisional_prediction": {
+        "mean_ms": 66.09,
+        "p50_ms": 63.04,
+        "p95_ms": 93.43,
+        "max_ms": 93.69
+      },
+      "subsequent_stabilization_frame": {
+        "mean_ms": 24.15,
+        "p50_ms": 24.49,
+        "p95_ms": 25.9,
+        "max_ms": 27.0
+      },
+      "simulated_display_capture": {
+        "mean_ms": 21.85,
+        "p50_ms": 19.08,
+        "p95_ms": 34.84,
+        "max_ms": 44.75
+      }
+    },
     "e2e_pipeline_step_latency": {
-      "mean_ms": 69.81,
-      "p50_ms": 68.52,
-      "p95_ms": 88.08,
-      "max_ms": 93.7
+      "mean_ms": 66.09,
+      "p50_ms": 63.04,
+      "p95_ms": 93.43,
+      "max_ms": 93.69
     },
     "component_latencies": {
       "1_display_capture": {
-        "mean_ms": 22.45,
-        "p50_ms": 20.24,
-        "p95_ms": 34.73,
-        "max_ms": 45.56
+        "mean_ms": 21.85,
+        "p50_ms": 19.08,
+        "p95_ms": 34.84,
+        "max_ms": 44.75
       },
       "2_game_localization": {
-        "mean_ms": 1.45,
-        "p50_ms": 0.77,
-        "p95_ms": 2.24,
-        "max_ms": 12.15
+        "mean_ms": 1.43,
+        "p50_ms": 0.78,
+        "p95_ms": 2.69,
+        "max_ms": 12.85
       },
       "3_perception_preprocessing": {
-        "mean_ms": 26.13,
-        "p50_ms": 21.8,
-        "p95_ms": 43.44,
-        "max_ms": 58.09
+        "mean_ms": 26.41,
+        "p50_ms": 21.42,
+        "p95_ms": 51.21,
+        "max_ms": 70.9
       },
       "4_ocr_extraction": {
-        "mean_ms": 19.57,
-        "p50_ms": 17.57,
-        "p95_ms": 31.15,
-        "max_ms": 36.35
+        "mean_ms": 17.98,
+        "p50_ms": 18.34,
+        "p95_ms": 20.49,
+        "max_ms": 21.19
       },
       "5_encoder_inference": {
-        "mean_ms": 20.77,
-        "p50_ms": 20.69,
-        "p95_ms": 23.24,
-        "max_ms": 25.32
+        "mean_ms": 20.09,
+        "p50_ms": 20.11,
+        "p95_ms": 21.36,
+        "max_ms": 21.46
       },
       "6_candidate_matching": {
-        "mean_ms": 0.1,
-        "p50_ms": 0.09,
-        "p95_ms": 0.15,
-        "max_ms": 0.15
+        "mean_ms": 0.09,
+        "p50_ms": 0.08,
+        "p95_ms": 0.12,
+        "max_ms": 0.13
       },
       "7_temporal_reasoning": {
-        "mean_ms": 48.26,
-        "p50_ms": 45.93,
-        "p95_ms": 61.94,
-        "max_ms": 66.62
+        "mean_ms": 24.15,
+        "p50_ms": 24.49,
+        "p95_ms": 25.9,
+        "max_ms": 27.0
       },
       "8_confidence_evaluation": {
         "mean_ms": 0.01,
@@ -65,7 +88,29 @@
         "p95_ms": 0.01,
         "max_ms": 0.01
       }
-    }
+    },
+    "detailed_failures": [
+      {
+        "question_index": 1,
+        "ground_truth_name": "Celestial Warrior",
+        "ground_truth_id": 58,
+        "predicted_card": "Celestial Warrior",
+        "runner_up_card": "Assassin Star Prodigy",
+        "margin": 0.0396,
+        "confidence": 0.4,
+        "status": "uncertain",
+        "stage": "UNCERTAIN",
+        "temporal_agreement": 1.0,
+        "candidates": [
+          "Celestial Warrior",
+          "Assassin Star Prodigy",
+          "Holy Staff",
+          "Straw Hat"
+        ],
+        "failure_category": "uncertain_prediction",
+        "explanation": "Margin of victory (0.040) < required (0.040) (Obs: 2, Agreement: 100%)"
+      }
+    ]
   },
   "mode_b_live_benchmark": {
     "mode": "Mode B (Live Gameplay Benchmark)",
@@ -73,15 +118,19 @@
     "message": "Roblox window is not currently open or active on display."
   },
   "synthetic_images": {
-    "total_evaluations": 120,
+    "total_evaluations": 210,
+    "valid_cards_sampled": 30,
     "top1_accuracy_percent": 100.0,
     "top2_accuracy_percent": 100.0,
-    "avg_latency_ms": 20.37,
-    "p95_latency_ms": 21.88,
+    "avg_latency_ms": 20.89,
+    "p95_latency_ms": 23.17,
     "per_distortion_breakdown": {
       "gaussian_jitter": 100.0,
       "box_jitter": 100.0,
       "motion_blur": 100.0,
+      "downsampling": 100.0,
+      "compression_artifacts": 100.0,
+      "contrast_brightness_shift": 100.0,
       "compound_noise": 100.0
     }
   },
@@ -102,9 +151,9 @@
   },
   "summary": {
     "synthetic_top1_percent": 100.0,
-    "replay_top1_percent": 85.0,
-    "e2e_pipeline_step_p50_ms": 68.52,
-    "e2e_pipeline_step_p95_ms": 88.08,
+    "replay_top1_percent": 95.0,
+    "e2e_pipeline_step_p50_ms": 63.04,
+    "e2e_pipeline_step_p95_ms": 93.43,
     "avg_temporal_agreement": 1.0,
     "real_samples_count": 3,
     "disclaimer": "Metrics are measured on actual QuizPipeline.step() execution with no data leakage."

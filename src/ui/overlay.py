@@ -28,10 +28,15 @@ logger = logging.getLogger("overlay_ui")
 class FloatingOverlay(QWidget):
     """Floating transparent desktop assistant panel."""
 
-    def __init__(self, pipeline: QuizPipeline, is_offline: bool = True, parent=None):
+    def __init__(self, pipeline: QuizPipeline, is_offline: Optional[bool] = None, parent=None):
         super().__init__(parent)
         self.pipeline = pipeline
-        self.is_offline = is_offline
+        # Strictly verify offline status against actual pipeline/model_manager state
+        pipeline_verified = getattr(self.pipeline, "is_offline_verified", False)
+        if is_offline is None:
+            self.is_offline = bool(pipeline_verified)
+        else:
+            self.is_offline = bool(is_offline and pipeline_verified)
         self.drag_position = QPoint()
         self.worker: Optional[PipelineWorker] = None
         self.last_result: Optional[AnswerResult] = None
