@@ -70,6 +70,18 @@ class ContextAnalyzer:
         self._last_question_hash: Optional[str] = None
         self._last_question_time: float = 0.0
 
+    @staticmethod
+    def hex_hash_distance(h1: str, h2: str) -> int:
+        """Computes Hamming distance between two hex hashes."""
+        if not h1 or not h2:
+            return 999
+        try:
+            val1 = int(h1, 16)
+            val2 = int(h2, 16)
+            return bin(val1 ^ val2).count("1")
+        except ValueError:
+            return sum(c1 != c2 for c1, c2 in zip(h1, h2))
+
     def evaluate_transition(
         self,
         is_active_question: bool,
@@ -104,12 +116,16 @@ class ContextAnalyzer:
         elif is_active_question:
             # Detect new question round:
             # - No active session, OR
-            # - New card hash, OR
+            # - Materially different card hash (Hamming distance > 8 bits, not minor unblurring), OR
             # - Active session already had its result processed, OR
             # - Minimum time elapsed (> 4.0s) even if hash is identical (repeated card round)
+            hash_mismatch = False
+            if card_hash and self._last_question_hash:
+                hash_mismatch = (self.hex_hash_distance(card_hash, self._last_question_hash) > 8)
+
             is_new_question = (
                 self.active_session is None or
-                (card_hash and card_hash != self._last_question_hash) or
+                hash_mismatch or
                 self.active_session.result_processed or
                 (now - self._last_question_time > 4.0 and self.active_session.has_predicted)
             )

@@ -105,6 +105,27 @@ class AutomaticSampleCollector:
                     session_id, predicted_name, len(option_names))
         return session_id
 
+    def update_pending_candidates(
+        self,
+        option_names: List[str],
+        option_ids: List[Optional[int]]
+    ) -> bool:
+        """
+        Safely updates candidate options and IDs for the pending question
+        (e.g. when OCR refreshes on a grid change) without overwriting
+        the original blurred image or blurred embedding.
+        """
+        if not self.pending_question:
+            return False
+        valid_ids = [cid for cid in option_ids if cid is not None]
+        self.pending_question.option_names = list(option_names)
+        self.pending_question.option_ids = valid_ids
+        logger.info(
+            "Updated pending question candidate options: %s (valid IDs: %s)",
+            self.pending_question.option_names, valid_ids
+        )
+        return True
+
     def process_result(
         self,
         clear_frame: np.ndarray,

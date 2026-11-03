@@ -29,7 +29,7 @@ from src.core.decision_engine import AnswerDecisionEngine, AnswerResult
 from src.learning.result_detector import ResultDetector, ResultDetectionEvent
 from src.learning.sample_collector import AutomaticSampleCollector, CollectionReport
 from src.ai.model_manager import ModelManager
-from src.ai.perception_engine import PerceptionEngine, PerceptionFrame
+from src.ai.perception_engine import PerceptionEngine, PerceptionFrame, OCRSource
 from src.ai.context_analyzer import ContextAnalyzer, QuizState
 from src.ai.candidate_reasoner import CandidateReasoner, ReasonedAnswer
 from src.ai.temporal_analyzer import TemporalAnalyzer
@@ -162,7 +162,10 @@ class QuizPipeline:
             sid = self.context_analyzer.active_session.session_id if self.context_analyzer.active_session else f"q_{int(event.timestamp)}"
             self.current_session_id = sid
             self.temporal_analyzer.set_session(sid)
-            self.current_candidates = p_frame.ocr_candidates
+            if p_frame.ocr_source != OCRSource.INVALID:
+                self.current_candidates = p_frame.ocr_candidates
+            else:
+                self.current_candidates = []
 
             self.state = "ACTIVE_QUESTION"
             logger.info("Pipeline: New question detected (%s)! Commencing sub-100ms candidate analysis...", sid)
@@ -235,11 +238,94 @@ class QuizPipeline:
             not event.is_result_detected and
             self.detector.current_state not in ("RESULT_REVEALED", "SAMPLE_VERIFICATION")
         ):
-            # Subsequent active-question frames: Multi-frame temporal stabilization
+            # Subsequent active-question frames: OCR synchronization & adaptive visual inference
             sid = self.context_analyzer.active_session.session_id if self.context_analyzer.active_session else self.current_session_id
-            if p_frame.card_frame is not None and p_frame.card_frame.size > 0:
-                cands = self.current_candidates or p_frame.ocr_candidates
 
+            # 1. OCR candidate synchronization on grid change
+            if p_frame.ocr_source == OCRSource.REFRESHED:
+                logger.info("Pipeline: PerceptionEngine signaled REFRESHED candidates; updating pipeline candidates.")
+                self.current_candidates = p_frame.ocr_candidates
+                # Safely update pending question candidate names and IDs in adaptive_learning without touching blurred image
+                if self.adaptive_learning and self.matcher:
+                    opt_names = [c.canonical_name for c in self.current_candidates if c.canonical_name]
+                    opt_ids = [self.matcher.find_card_index(name) for name in opt_names]
+                    opt_cids = [int(self.matcher.card_ids[idx]) if idx is not None else None for idx in opt_ids]
+                    self.adaptive_learning.update_pending_candidates(opt_names, opt_cids)
+            elif p_frame.ocr_source == OCRSource.INVALID:
+                logger.warning("Pipeline: PerceptionEngine signaled INVALID OCR on grid change; invalidating stale candidates.")
+                self.current_candidates = []
+
+            cands = self.current_candidates if (self.current_candidates and p_frame.ocr_source != OCRSource.INVALID) else (
+                p_frame.ocr_candidates if p_frame.ocr_source != OCRSource.INVALID else []
+            )
+
+            # 2. Adaptive Visual Inference Check
+            # If card region has NOT materially changed, options are cached, and we already hold a prediction:
+            # Skip expensive DINOv2 inference and do NOT artificially increment temporal observation count!
+            if (
+                not p_frame.has_card_changed and
+                p_frame.ocr_source == OCRSource.FROM_CACHE and
+                self.last_result is not None
+            ):
+                stab_ans, agreement_ratio, obs_count = self.temporal_analyzer.get_stabilized_answer(
+                    session_id=sid,
+                    return_details=True
+                )
+                if obs_count < 2 or stab_ans is None:
+                    logger.debug("Pipeline: Card artwork and options visually unchanged; skipping DINOv2 inference.")
+                    return self.last_result, None
+
+                # Temporal observations already exist (>=2); evaluate stabilization without re-running DINOv2
+                is_constrained = (len(cands) == 4 and len(set(c.card_id for c in cands if c.card_id)) == 4)
+                verdict = self.confidence_engine.evaluate(
+                    top_score=stab_ans.raw_match.get("raw_score", stab_ans.confidence),
+                    runner_up_score=stab_ans.runner_up_score or 0.0,
+                    candidate_constrained=is_constrained,
+                    source=stab_ans.source,
+                    ocr_quality=self.last_result.confidence,
+                    candidate_count=len(cands),
+                    temporal_agreement=agreement_ratio
+                )
+
+                if obs_count >= 3 and agreement_ratio >= 0.70 and verdict.is_confident and stab_ans.slot_index is not None:
+                    stage = "CONFIDENT"
+                    status = "matched"
+                    final_conf = verdict.calibrated_confidence
+                elif agreement_ratio >= 0.60 and verdict.is_confident and stab_ans.slot_index is not None:
+                    stage = "STABILIZING"
+                    status = "matched"
+                    final_conf = verdict.calibrated_confidence
+                else:
+                    stage = "UNCERTAIN"
+                    status = "uncertain"
+                    final_conf = min(verdict.calibrated_confidence, 0.40)
+
+                stab_result = AnswerResult(
+                    status=status,
+                    card_name=stab_ans.card_name,
+                    card_id=stab_ans.card_id,
+                    confidence=final_conf,
+                    confidence_level=verdict.confidence_level if status == "matched" else "UNCERTAIN",
+                    matched_from=stab_ans.source,
+                    raw_score=stab_ans.raw_match.get("raw_score", stab_ans.confidence),
+                    margin=verdict.margin_of_victory,
+                    candidates=[c.canonical_name for c in cands if c.canonical_name],
+                    alternatives=stab_ans.raw_match.get("alternatives", []),
+                    explanation=f"{verdict.explanation} (Obs: {obs_count}, Agreement: {agreement_ratio*100:.0f}%)",
+                    processing_time_ms=0.5,
+                    button_slot=stab_ans.slot_index,
+                    runner_up_name=stab_ans.runner_up_name,
+                    runner_up_score=stab_ans.runner_up_score,
+                    captured_image=self.last_result.captured_image,
+                    query_embedding=stab_ans.query_embedding,
+                    prediction_stage=stage,
+                    temporal_agreement=round(agreement_ratio, 3),
+                    observation_count=obs_count
+                )
+                self.last_result = stab_result
+                return stab_result, None
+
+            if p_frame.card_frame is not None and p_frame.card_frame.size > 0:
                 frame_result = self.decision_engine.process_question(
                     card_frame=p_frame.card_frame,
                     button_frames=p_frame.button_frames,

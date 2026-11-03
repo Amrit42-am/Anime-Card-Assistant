@@ -44,6 +44,9 @@ data/test_btn.png
 data/*.tmp
 data/blur_variants/
 data/learned_blurs/card_*
+data/card_memory.db
+data/card_memory.db-wal
+data/card_memory.db-shm
 data/card_memory.db-journal
 
 # Large Model Weights (Downloaded via scripts/download_models.py)

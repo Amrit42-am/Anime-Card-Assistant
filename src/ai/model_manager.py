@@ -55,6 +55,7 @@ class ModelManager:
         # Enforce offline mode in PyTorch / HuggingFace
         os.environ["HF_HUB_OFFLINE"] = "1"
         os.environ["TRANSFORMERS_OFFLINE"] = "1"
+        self.verified_weights_path: Optional[Path] = None
 
         # Verify offline integrity
         self.is_offline_verified, self.verification_message = self.verify_manifest()
@@ -65,14 +66,21 @@ class ModelManager:
                 "Please run: ./prepare.sh"
             )
 
+        if not self.is_offline_verified:
+            self._initialized = True
+            return
+
         logger.info("Initializing offline ModelManager on device: %s (%s)",
                     self._device, self.verification_message)
 
-        weights_file = self.models_dir / "dinov2" / "vit_small_patch14_dinov2.safetensors"
+        weights_file = getattr(self, "verified_weights_path", None)
+        if weights_file is None:
+            weights_file = self.models_dir / "dinov2" / "vit_small_patch14_dinov2.safetensors"
+
         self._encoder = ImageEncoder(
             model_name=self.model_name,
             device=str(self._device),
-            weights_path=weights_file if weights_file.exists() else None,
+            weights_path=weights_file if (weights_file and weights_file.exists()) else None,
             require_offline=self.require_offline
         )
 
@@ -150,6 +158,8 @@ class ModelManager:
                 if actual_sha.lower() != expected_sha.lower():
                     return False, f"Model SHA256 mismatch for {model_path}: got {actual_sha}, expected {expected_sha}"
 
+            self.verified_weights_path = model_path
+
             # Check embeddings file
             emb_spec = manifest.get("embeddings")
             if emb_spec:
@@ -161,8 +171,10 @@ class ModelManager:
                 if not emb_path.exists():
                     return False, f"Embeddings file missing at {emb_path}"
 
-                # Verify embedding dimension and card count with proper resource closure
-                with np.load(emb_path, allow_pickle=True) as data:
+                # Verify embedding dimension and card count with allow_pickle=False
+                with np.load(emb_path, allow_pickle=False) as data:
+                    if "clean_embeddings" not in data:
+                        return False, f"Missing 'clean_embeddings' array in {emb_path}"
                     clean_emb = data["clean_embeddings"]
 
                     expected_cards = emb_spec.get("expected_cards", 286)
@@ -179,6 +191,41 @@ class ModelManager:
                             f"expected {expected_dim}"
                         )
 
+                    # Validate embeddings_meta.json if present
+                    meta_path = emb_path.parent / "embeddings_meta.json"
+                    if meta_path.exists():
+                        try:
+                            with open(meta_path, "r", encoding="utf-8") as mf:
+                                meta = json.load(mf)
+
+                            if "card_count" in meta and meta["card_count"] != clean_emb.shape[0]:
+                                return False, (
+                                    f"Incompatible embeddings card count in metadata ({meta['card_count']}), "
+                                    f"expected {clean_emb.shape[0]}"
+                                )
+
+                            if "dimension" in meta and meta["dimension"] != clean_emb.shape[1]:
+                                return False, (
+                                    f"Incompatible embeddings dimension in metadata ({meta['dimension']}), "
+                                    f"expected {clean_emb.shape[1]}"
+                                )
+
+                            if "clean_shape" in meta and list(meta["clean_shape"]) != list(clean_emb.shape):
+                                return False, (
+                                    f"Embeddings metadata clean_shape mismatch ({meta['clean_shape']}), "
+                                    f"expected {list(clean_emb.shape)}"
+                                )
+
+                            if "blur_embeddings" in data and "blur_shape" in meta:
+                                blur_emb = data["blur_embeddings"]
+                                if list(meta["blur_shape"]) != list(blur_emb.shape):
+                                    return False, (
+                                        f"Embeddings metadata blur_shape mismatch ({meta['blur_shape']}), "
+                                        f"expected {list(blur_emb.shape)}"
+                                    )
+                        except Exception as me:
+                            return False, f"Failed to validate embeddings metadata: {me}"
+
             return True, "All model checkpoints and embeddings verified locally"
         except Exception as e:
             return False, f"Manifest verification error: {e}"
@@ -194,17 +241,15 @@ class ModelManager:
         return torch.device("cpu")
 
     @property
-    def device(self) -> torch.device:
-        return self._device
-
-    @property
     def encoder(self) -> BaseImageEncoder:
         if self._encoder is None:
-            weights_file = self.models_dir / "dinov2" / "vit_small_patch14_dinov2.safetensors"
+            weights_file = getattr(self, "verified_weights_path", None)
+            if weights_file is None:
+                weights_file = self.models_dir / "dinov2" / "vit_small_patch14_dinov2.safetensors"
             self._encoder = ImageEncoder(
                 model_name=self.model_name,
                 device=str(self._device),
-                weights_path=weights_file if weights_file.exists() else None,
+                weights_path=weights_file if (weights_file and weights_file.exists()) else None,
                 require_offline=self.require_offline
             )
         return self._encoder
@@ -216,6 +261,7 @@ class ModelManager:
     def reset_instance(cls):
         """Reset the singleton instance (useful for testing)."""
         cls._instance = None
+        cls._encoder = None
 
     @classmethod
     def get_instance(cls, require_offline: bool = True) -> "ModelManager":

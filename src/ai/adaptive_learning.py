@@ -80,6 +80,14 @@ class AdaptiveLearning:
         """Safely expires any pending active question."""
         self.collector.expire_pending_question(reason)
 
+    def update_pending_candidates(
+        self,
+        option_names: List[str],
+        option_ids: List[Optional[int]]
+    ) -> bool:
+        """Safely updates candidate options and IDs for pending question without touching original blurred image."""
+        return self.collector.update_pending_candidates(option_names, option_ids)
+
     @property
     def pending_question(self):
         """Returns the pending active question from collector."""

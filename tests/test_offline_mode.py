@@ -255,4 +255,63 @@ def test_pipeline_no_fallback_to_pretrained_remote_weights(monkeypatch):
     assert "./prepare.sh" in str(exc_info.value)
 
 
+def test_manifest_embeddings_meta_mismatch(tmp_path):
+    """Verify that embeddings_meta.json mismatching NPZ contents fails verification."""
+    import numpy as np
+    fake_models_dir = tmp_path / "models"
+    emb_dir = fake_models_dir / "embeddings"
+    emb_dir.mkdir(parents=True)
+
+    emb_file = emb_dir / "card_embeddings.npz"
+    clean = np.zeros((286, 384), dtype=np.float32)
+    blur = np.zeros((286, 6, 384), dtype=np.float32)
+    np.savez_compressed(emb_file, clean_embeddings=clean, blur_embeddings=blur)
+
+    # Put mismatched metadata (card_count 100 instead of 286)
+    meta_file = emb_dir / "embeddings_meta.json"
+    with open(meta_file, "w") as f:
+        json.dump({"card_count": 100, "dimension": 384, "clean_shape": [100, 384]}, f)
+
+    dinov2_dir = fake_models_dir / "dinov2"
+    dinov2_dir.mkdir(parents=True)
+    fake_weights = dinov2_dir / "weights.safetensors"
+    with open(fake_weights, "wb") as f:
+        f.write(b"dummy")
+
+    fake_manifest = {
+        "version": "1.0.0",
+        "models": {
+            "dinov2_small": {
+                "arch": "vit_small_patch14_dinov2.lvd142m",
+                "filename": "dinov2/weights.safetensors",
+                "sha256": ModelManager.compute_sha256(fake_weights),
+                "expected_dimension": 384,
+                "size_bytes": 5
+            }
+        },
+        "embeddings": {
+            "filename": "embeddings/card_embeddings.npz",
+            "expected_cards": 286,
+            "dimension": 384
+        }
+    }
+    with open(fake_models_dir / "manifest.json", "w") as f:
+        json.dump(fake_manifest, f)
+
+    manager = ModelManager(models_dir=fake_models_dir, require_offline=False)
+    is_ok, msg = manager.verify_manifest()
+    assert is_ok is False
+    assert "metadata" in msg.lower()
+
+
+def test_model_manager_loads_exact_verified_weights_path():
+    """Verify ModelManager passes the exact verified checkpoint path to the encoder."""
+    manager = ModelManager.get_instance()
+    assert manager.is_offline_verified is True
+    assert manager.verified_weights_path is not None
+    assert manager.verified_weights_path.exists()
+    assert manager.encoder.weights_path == manager.verified_weights_path
+
+
+
 

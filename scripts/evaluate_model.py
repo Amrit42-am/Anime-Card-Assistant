@@ -273,6 +273,7 @@ def benchmark_mode_a_replay(cards, num_questions: int = 20):
     QuizPipeline.step() execution with deterministic dependencies.
     Measures complete pipeline execution and component breakdown.
     Does NOT count uncertain predictions as successful matches.
+    Uses successfully_evaluated_questions as the denominator.
     """
     logger.info("Executing Mode A: Replay Benchmark on Live QuizPipeline.step()...")
     pipeline = QuizPipeline(auto_init_models=True)
@@ -280,10 +281,22 @@ def benchmark_mode_a_replay(cards, num_questions: int = 20):
 
     valid_cards = [c for c in cards if Path(c.get("image", "")).exists()]
     sampled = random.sample(range(len(valid_cards)), min(num_questions, len(valid_cards)))
+
+    # Explicit counters required by benchmark specification
+    requested_samples = num_questions
+    sampled_cards = len(sampled)
+    existing_image_files = 0
+    successfully_decoded_images = 0
+    successfully_evaluated_questions = 0
+    pipeline_failures = 0
+    predictions_returned = 0
+    correct_matched_predictions = 0
+    incorrect_matched_predictions = 0
+    uncertain_predictions = 0
+    missing_predictions = 0
+
     top1_correct = 0
     top2_correct = 0
-    uncertain_count = 0
-    false_positives = 0
     temporal_agreements = []
     step_times = []
     provisional_times = []
@@ -303,9 +316,15 @@ def benchmark_mode_a_replay(cards, num_questions: int = 20):
         target = valid_cards[idx]
         target_name = target["name"]
         cid = target["id"]
-        card_img = cv2.imread(target["image"])
+
+        img_path = Path(target.get("image", ""))
+        if img_path.exists():
+            existing_image_files += 1
+
+        card_img = cv2.imread(str(img_path))
         if card_img is None:
             continue
+        successfully_decoded_images += 1
 
         # 3 distractors
         distractor_pool = [i for i in range(len(valid_cards)) if i != idx]
@@ -313,7 +332,11 @@ def benchmark_mode_a_replay(cards, num_questions: int = 20):
         candidate_names = [target_name] + [valid_cards[i]["name"] for i in distractors]
         random.shuffle(candidate_names)
 
-        blurred_card = cv2.GaussianBlur(card_img, (35, 35), 12.0)
+        # Frame 1: initial question blur
+        blurred_card_1 = cv2.GaussianBlur(card_img, (35, 35), 12.0)
+        # Frame 2: consecutive unblurring progression (tests temporal stabilization)
+        blurred_card_2 = cv2.GaussianBlur(card_img, (27, 27), 9.0)
+
         btn_frames = []
         for name in candidate_names:
             btn = np.ones((60, 260, 3), dtype=np.uint8) * 40
@@ -328,9 +351,18 @@ def benchmark_mode_a_replay(cards, num_questions: int = 20):
         options_frame = np.vstack([top_row, bot_row])
         game_frame = np.ones((600, 800, 3), dtype=np.uint8) * 30
 
-        mock_bundle = {
+        mock_bundle_1 = {
             "game_frame": game_frame,
-            "card_frame": blurred_card,
+            "card_frame": blurred_card_1,
+            "options_frame": options_frame,
+            "button_frames": btn_frames,
+            "timer_frame": None,
+            "banner_frame": None
+        }
+
+        mock_bundle_2 = {
+            "game_frame": game_frame,
+            "card_frame": blurred_card_2,
             "options_frame": options_frame,
             "button_frames": btn_frames,
             "timer_frame": None,
@@ -343,7 +375,7 @@ def benchmark_mode_a_replay(cards, num_questions: int = 20):
         comp_locate.append((time.perf_counter() - t0) * 1000.0)
 
         t0 = time.perf_counter()
-        p_frame = pipeline.perception_engine.perceive_frame(bundle=mock_bundle)
+        p_frame = pipeline.perception_engine.perceive_frame(bundle=mock_bundle_1)
         comp_perception.append((time.perf_counter() - t0) * 1000.0)
 
         t0 = time.perf_counter()
@@ -351,7 +383,7 @@ def benchmark_mode_a_replay(cards, num_questions: int = 20):
         comp_ocr.append((time.perf_counter() - t0) * 1000.0)
 
         t0 = time.perf_counter()
-        emb = pipeline.encoder.encode_image(blurred_card)
+        emb = pipeline.encoder.encode_image(blurred_card_1)
         comp_encoder.append((time.perf_counter() - t0) * 1000.0)
 
         t0 = time.perf_counter()
@@ -365,10 +397,10 @@ def benchmark_mode_a_replay(cards, num_questions: int = 20):
         # Reset pipeline state before evaluating test question
         pipeline.reset()
         orig_capture = pipeline.capture.capture_quiz_bundle
-        pipeline.capture.capture_quiz_bundle = lambda *args, **kwargs: mock_bundle
 
         try:
             # Step 1: Initial Question (Provisional Answer)
+            pipeline.capture.capture_quiz_bundle = lambda *args, **kwargs: mock_bundle_1
             t_step0 = time.perf_counter()
             ans1, _ = pipeline.step()
             t_step1 = time.perf_counter()
@@ -377,6 +409,7 @@ def benchmark_mode_a_replay(cards, num_questions: int = 20):
             provisional_times.append(prov_ms)
 
             # Step 2: Consecutive Frame (Multi-Frame Temporal Stabilization)
+            pipeline.capture.capture_quiz_bundle = lambda *args, **kwargs: mock_bundle_2
             t_temp0 = time.perf_counter()
             ans2, _ = pipeline.step()
             t_temp1 = time.perf_counter()
@@ -384,26 +417,54 @@ def benchmark_mode_a_replay(cards, num_questions: int = 20):
             comp_temporal.append(stab_ms)
             stabilization_times.append(stab_ms)
 
+            successfully_evaluated_questions += 1
             final_ans = ans2 or ans1
-            is_top1 = bool(final_ans and final_ans.card_name == target_name and final_ans.status == "matched")
-            is_top2 = bool(is_top1 or (final_ans and final_ans.status == "matched" and final_ans.runner_up_name == target_name))
 
-            if final_ans:
+            if final_ans is None:
+                missing_predictions += 1
+                failure_details.append({
+                    "question_index": q_idx,
+                    "ground_truth_name": target_name,
+                    "ground_truth_id": cid,
+                    "predicted_card": None,
+                    "runner_up_card": None,
+                    "margin": 0.0,
+                    "confidence": 0.0,
+                    "status": "missing",
+                    "stage": "NONE",
+                    "temporal_agreement": 0.0,
+                    "observation_count": 0,
+                    "candidates": candidate_names,
+                    "ocr_candidate_identities": [c.canonical_name for c in (p_frame.ocr_candidates if p_frame else [])],
+                    "raw_visual_scores": {},
+                    "failure_category": "missing_prediction",
+                    "explanation": "No answer returned by pipeline"
+                })
+            else:
+                predictions_returned += 1
                 temporal_agreements.append(final_ans.temporal_agreement)
 
+                is_top1 = (final_ans.card_name == target_name and final_ans.status == "matched")
+                is_top2 = is_top1 or (
+                    final_ans.status == "matched" and
+                    final_ans.runner_up_name == target_name
+                )
+
                 if is_top1:
+                    correct_matched_predictions += 1
                     top1_correct += 1
                     top2_correct += 1
                 else:
                     if is_top2:
                         top2_correct += 1
                     if final_ans.status == "matched":
-                        false_positives += 1
+                        incorrect_matched_predictions += 1
+                    elif final_ans.status == "uncertain":
+                        uncertain_predictions += 1
+                    else:
+                        missing_predictions += 1
 
-                if final_ans.status == "uncertain":
-                    uncertain_count += 1
-
-                if not is_top1:
+                    cat = "uncertain_prediction" if final_ans.status == "uncertain" else "misclassification"
                     failure_details.append({
                         "question_index": q_idx,
                         "ground_truth_name": target_name,
@@ -415,10 +476,37 @@ def benchmark_mode_a_replay(cards, num_questions: int = 20):
                         "status": final_ans.status,
                         "stage": final_ans.prediction_stage,
                         "temporal_agreement": final_ans.temporal_agreement,
+                        "observation_count": final_ans.observation_count,
                         "candidates": candidate_names,
-                        "failure_category": "uncertain_prediction" if final_ans.status == "uncertain" else "misclassification",
+                        "ocr_candidate_identities": final_ans.candidates,
+                        "raw_visual_scores": {
+                            "top_score": final_ans.raw_score,
+                            "runner_up_score": final_ans.runner_up_score
+                        },
+                        "failure_category": cat,
                         "explanation": final_ans.explanation
                     })
+        except Exception as e:
+            logger.error("Pipeline failure on question %d: %s", q_idx, e)
+            pipeline_failures += 1
+            failure_details.append({
+                "question_index": q_idx,
+                "ground_truth_name": target_name,
+                "ground_truth_id": cid,
+                "predicted_card": None,
+                "runner_up_card": None,
+                "margin": 0.0,
+                "confidence": 0.0,
+                "status": "error",
+                "stage": "ERROR",
+                "temporal_agreement": 0.0,
+                "observation_count": 0,
+                "candidates": candidate_names,
+                "ocr_candidate_identities": [],
+                "raw_visual_scores": {},
+                "failure_category": "pipeline_failure",
+                "explanation": f"Pipeline raised exception: {e}"
+            })
         finally:
             pipeline.capture.capture_quiz_bundle = orig_capture
 
@@ -442,15 +530,41 @@ def benchmark_mode_a_replay(cards, num_questions: int = 20):
             "max_ms": round(float(np.max(arr)), 2)
         }
 
-    valid_q = len(sampled)
+    valid_q = successfully_evaluated_questions
+    top1_acc = round((correct_matched_predictions / valid_q) * 100.0, 2) if valid_q > 0 else 0.0
+    top2_acc = round((top2_correct / valid_q) * 100.0, 2) if valid_q > 0 else 0.0
+    unc_rate = round((uncertain_predictions / valid_q) * 100.0, 2) if valid_q > 0 else 0.0
+    fp_rate = round((incorrect_matched_predictions / valid_q) * 100.0, 2) if valid_q > 0 else 0.0
+
+    aggregate_failures = {
+        "total_failures": len(failure_details),
+        "uncertain_count": uncertain_predictions,
+        "misclassification_count": incorrect_matched_predictions,
+        "missing_count": missing_predictions,
+        "pipeline_error_count": pipeline_failures
+    }
+
     return {
         "mode": "Mode A (Replay Pipeline Benchmark)",
         "input_type": "simulated_replayed_capture",
+        "counters": {
+            "requested_samples": requested_samples,
+            "sampled_cards": sampled_cards,
+            "existing_image_files": existing_image_files,
+            "successfully_decoded_images": successfully_decoded_images,
+            "successfully_evaluated_questions": successfully_evaluated_questions,
+            "pipeline_failures": pipeline_failures,
+            "predictions_returned": predictions_returned,
+            "correct_matched_predictions": correct_matched_predictions,
+            "incorrect_matched_predictions": incorrect_matched_predictions,
+            "uncertain_predictions": uncertain_predictions,
+            "missing_predictions": missing_predictions
+        },
         "questions_evaluated": valid_q,
-        "top1_accuracy_percent": round((top1_correct / valid_q) * 100.0, 2) if valid_q else 0.0,
-        "top2_accuracy_percent": round((top2_correct / valid_q) * 100.0, 2) if valid_q else 0.0,
-        "uncertain_rate_percent": round((uncertain_count / valid_q) * 100.0, 2) if valid_q else 0.0,
-        "false_positive_rate_percent": round((false_positives / valid_q) * 100.0, 2) if valid_q else 0.0,
+        "top1_accuracy_percent": top1_acc,
+        "top2_accuracy_percent": top2_acc,
+        "uncertain_rate_percent": unc_rate,
+        "false_positive_rate_percent": fp_rate,
         "avg_temporal_agreement": round(float(np.mean(temporal_agreements)), 3) if temporal_agreements else 1.0,
         "timing_breakdown": {
             "first_provisional_prediction": stats(provisional_times),
@@ -468,6 +582,7 @@ def benchmark_mode_a_replay(cards, num_questions: int = 20):
             "7_temporal_reasoning": stats(comp_temporal),
             "8_confidence_evaluation": stats(comp_confidence)
         },
+        "aggregate_failure_summary": aggregate_failures,
         "detailed_failures": failure_details
     }
 
@@ -549,7 +664,6 @@ def run_comprehensive_evaluation(num_cards: int = 30, encoder_name: str = "dinov
 
     logger.info("Comprehensive benchmark report saved to %s", REPORT_PATH)
     print("\n" + json.dumps(full_report["summary"], indent=2))
-    return full_report
     return full_report
 
 

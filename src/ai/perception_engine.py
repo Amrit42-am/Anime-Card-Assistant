@@ -9,6 +9,7 @@ and extracts result banner messages.
 
 import re
 from dataclasses import dataclass
+from enum import Enum
 import logging
 import time
 from typing import List, Optional, Dict, Any, Tuple
@@ -21,6 +22,14 @@ from src.ocr.option_reader import OptionReader, CandidateOption
 from src.learning.result_detector import compute_image_sharpness
 
 logger = logging.getLogger("perception_engine")
+
+
+class OCRSource(str, Enum):
+    NEWLY_EXTRACTED = "newly_extracted"
+    FROM_CACHE = "from_cache"
+    REFRESHED = "refreshed"
+    UNAVAILABLE = "unavailable"
+    INVALID = "invalid"
 
 
 @dataclass
@@ -37,6 +46,10 @@ class PerceptionFrame:
     banner_text: str
     timestamp: float
     timer_value: Optional[float] = None
+    ocr_source: OCRSource = OCRSource.UNAVAILABLE
+    has_card_changed: bool = True
+    card_hash: str = ""
+    options_hash: str = ""
 
 
 class PerceptionEngine:
@@ -57,6 +70,8 @@ class PerceptionEngine:
         self.sharpness_threshold = sharpness_threshold
         self._last_options_hash: Optional[str] = None
         self._cached_candidates: List[CandidateOption] = []
+        self._last_card_hash: Optional[str] = None
+        self._last_card_sharpness: float = 0.0
 
     @staticmethod
     def compute_options_hash(options_frame: Optional[np.ndarray]) -> str:
@@ -69,6 +84,16 @@ class PerceptionEngine:
         return "".join(["1" if b else "0" for b in diff.flatten()])
 
     @staticmethod
+    def compute_card_hash(card_frame: Optional[np.ndarray]) -> str:
+        """Computes a fast 16x16 difference hash (dhash) to detect card artwork changes."""
+        if card_frame is None or card_frame.size == 0:
+            return ""
+        resized = cv2.resize(card_frame, (17, 16), interpolation=cv2.INTER_AREA)
+        gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY) if resized.ndim == 3 else resized
+        diff = gray[:, 1:] > gray[:, :-1]
+        return "".join(["1" if b else "0" for b in diff.flatten()])
+
+    @staticmethod
     def hash_distance(h1: str, h2: str) -> int:
         """Computes Hamming distance between two binary hashes."""
         if not h1 or not h2 or len(h1) != len(h2):
@@ -76,9 +101,11 @@ class PerceptionEngine:
         return sum(c1 != c2 for c1, c2 in zip(h1, h2))
 
     def reset_cache(self):
-        """Clears cached OCR candidate options."""
+        """Clears cached OCR candidate options and card hashes."""
         self._last_options_hash = None
         self._cached_candidates = []
+        self._last_card_hash = None
+        self._last_card_sharpness = 0.0
 
     def perceive_frame(
         self,
@@ -89,6 +116,7 @@ class PerceptionEngine:
         Captures the current game state, crops subregions, and executes OCR.
         Uses supplied bundle if provided (e.g. for testing/mocking).
         Reuses cached candidates while the options grid remains visually stable.
+        Communicates explicit OCRSource status and detects card image changes.
         """
         now = time.time()
         b = bundle if bundle is not None else self.capture.capture_quiz_bundle()
@@ -103,6 +131,19 @@ class PerceptionEngine:
         sharpness = compute_image_sharpness(card_frame) if card_frame is not None else 0.0
         is_unblurred = sharpness >= self.sharpness_threshold
 
+        # Compute card hash and determine whether card region materially changed
+        card_hash = self.compute_card_hash(card_frame)
+        if self._last_card_hash is None:
+            has_card_changed = True
+        else:
+            card_dist = self.hash_distance(card_hash, self._last_card_hash)
+            sharp_delta = abs(sharpness - self._last_card_sharpness)
+            has_card_changed = (card_dist > 3 or sharp_delta > 15.0)
+
+        if card_frame is not None and card_frame.size > 0:
+            self._last_card_hash = card_hash
+            self._last_card_sharpness = sharpness
+
         # Check whether options grid has visually changed
         opt_hash = self.compute_options_hash(options_frame)
         grid_changed = (
@@ -113,11 +154,18 @@ class PerceptionEngine:
 
         # Run OCR on 2x2 buttons
         candidates: List[CandidateOption] = []
-        if run_ocr and button_frames and len(button_frames) == 4:
+        ocr_source: OCRSource = OCRSource.UNAVAILABLE
+
+        if not run_ocr or not button_frames or len(button_frames) != 4:
+            ocr_source = OCRSource.UNAVAILABLE
+            candidates = []
+        else:
             if not grid_changed and len(self._cached_candidates) == 4 and all(c.is_valid for c in self._cached_candidates):
                 # Reuse cached OCR candidates while grid remains visually stable
-                candidates = self._cached_candidates
+                candidates = list(self._cached_candidates)
+                ocr_source = OCRSource.FROM_CACHE
             else:
+                is_refresh = (self._last_options_hash is not None and len(self._cached_candidates) > 0)
                 candidates = self.option_reader.read_options_from_buttons(button_frames, use_retry=False)
                 valid_count = sum(1 for c in candidates if c.is_valid and c.card_id is not None)
                 if valid_count < 4:
@@ -126,10 +174,18 @@ class PerceptionEngine:
                     retry_valid = sum(1 for c in retry_candidates if c.is_valid and c.card_id is not None)
                     if retry_valid > valid_count:
                         candidates = retry_candidates
+                        valid_count = retry_valid
 
-                if len(candidates) == 4:
+                if len(candidates) == 4 and valid_count == 4:
                     self._cached_candidates = candidates
                     self._last_options_hash = opt_hash
+                    ocr_source = OCRSource.REFRESHED if is_refresh else OCRSource.NEWLY_EXTRACTED
+                else:
+                    # Grid changed, but OCR failed to resolve 4 valid candidates!
+                    # Invalidate stale candidates so they are not silently treated as current.
+                    self._cached_candidates = []
+                    self._last_options_hash = opt_hash
+                    ocr_source = OCRSource.INVALID
 
         # Timer numeric extraction
         timer_value: Optional[float] = None
@@ -168,6 +224,10 @@ class PerceptionEngine:
             is_card_unblurred=is_unblurred,
             banner_text=banner_text,
             timestamp=now,
-            timer_value=timer_value
+            timer_value=timer_value,
+            ocr_source=ocr_source,
+            has_card_changed=has_card_changed,
+            card_hash=card_hash,
+            options_hash=opt_hash
         )
 

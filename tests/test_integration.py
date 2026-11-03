@@ -27,7 +27,7 @@ def pipeline():
     ModelManager.reset_instance()
 
 
-def create_mock_quiz_frame(card_name: str, options: list[str]) -> dict:
+def create_mock_quiz_frame(card_name: str, options: list[str], blur_k: int = 35) -> dict:
     """Creates a mock game frame bundle with blurred card artwork and 4 2x2 option buttons."""
     # 1. Base card image: load a real card artwork from assets
     card_path = "assets/cards/card_137_green-bomber.png"
@@ -35,8 +35,9 @@ def create_mock_quiz_frame(card_name: str, options: list[str]) -> dict:
     if real_img is None:
         real_img = np.ones((224, 224, 3), dtype=np.uint8) * 120
 
-    # Apply heavy blur
-    blurred_card = cv2.GaussianBlur(real_img, (35, 35), 12.0)
+    # Apply blur
+    k = max(3, blur_k if blur_k % 2 == 1 else blur_k + 1)
+    blurred_card = cv2.GaussianBlur(real_img, (k, k), float(k) / 3.0)
 
     # 2. 2x2 Options frame with 4 buttons: TL, TR, BL, BR
     btn_frames = []
@@ -142,7 +143,9 @@ def test_pipeline_step_lifecycle(pipeline):
     assert answer.prediction_stage == "PROVISIONAL"
     assert report is None
 
-    # Step 2: Next frame during active question (Multi-frame temporal stabilization)
+    # Step 2: Next frame during active question (Multi-frame temporal stabilization with evolving frame)
+    active_bundle_frame2 = create_mock_quiz_frame("Green Bomber", options, blur_k=25)
+    pipeline.capture.capture_quiz_bundle = lambda *args, **kwargs: active_bundle_frame2
     answer2, report2 = pipeline.step()
     assert answer2 is not None
     assert answer2.card_name == "Green Bomber"
@@ -318,7 +321,9 @@ def test_temporal_contradictory_evidence_penalizes_confidence(pipeline):
     pipeline.temporal_analyzer.push(contradictory_ans, session_id=session_id)
     pipeline.temporal_analyzer.push(contradictory_ans, session_id=session_id)
 
-    # Frame 4: Run another step under the same question session
+    # Frame 4: Run another step under the same question session with evolving visual frame
+    bundle_a_frame4 = create_mock_quiz_frame("Green Bomber", options_a, blur_k=25)
+    pipeline.capture.capture_quiz_bundle = lambda *args, **kwargs: bundle_a_frame4
     ans_contra, _ = pipeline.step()
     assert ans_contra is not None
     # Now there are 2 Green Bomber and 2 Celestial Warrior -> agreement ratio is 0.50 (< 0.60)
@@ -355,7 +360,9 @@ def test_complete_quiz_lifecycle_state_machine(pipeline):
     )
     assert report1 is None
 
-    # 2. State: ACTIVE_QUESTION (Frame 2 -> STABILIZING)
+    # 2. State: ACTIVE_QUESTION (Frame 2 -> STABILIZING with evolving unblur frame)
+    active_bundle_frame2 = create_mock_quiz_frame("Green Bomber", options, blur_k=25)
+    pipeline.capture.capture_quiz_bundle = lambda *args, **kwargs: active_bundle_frame2
     ans_frame2, report2 = pipeline.step()
     assert ans_frame2 is not None
     assert ans_frame2.prediction_stage in ("STABILIZING", "CONFIDENT")
@@ -451,6 +458,143 @@ def test_perception_engine_ocr_cache_and_refresh(pipeline, monkeypatch):
     p3 = pipeline.perception_engine.perceive_frame(bundle=bundle_b)
     assert ocr_call_count["count"] > initial_calls, "OCR must re-run when options grid changes"
     assert "Celestial Warrior" in [c.canonical_name for c in p3.ocr_candidates]
+
+
+def test_adaptive_visual_inference_skips_unchanged_frame(pipeline, monkeypatch):
+    """
+    Verifies that on identical consecutive frames:
+    1. DINOv2 visual inference is skipped to save GPU/CPU cycles.
+    2. Temporal observation count is NOT artificially incremented.
+    3. The existing provisional answer is returned smoothly for the UI overlay.
+    """
+    options = ["Green Bomber", "Harmonious Soul", "Shadow Duelist", "Soul King"]
+    bundle = create_mock_quiz_frame("Green Bomber", options)
+    orig_capture = pipeline.capture.capture_quiz_bundle
+    pipeline.capture.capture_quiz_bundle = lambda *args, **kwargs: bundle
+    pipeline.reset()
+
+    # Track calls to encoder.encode_image
+    encode_calls = {"count": 0}
+    orig_encode = pipeline.encoder.encode_image
+
+    def spy_encode(*args, **kwargs):
+        encode_calls["count"] += 1
+        return orig_encode(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline.encoder, "encode_image", spy_encode)
+
+    try:
+        # Frame 1: First question detection & provisional prediction
+        ans1, _ = pipeline.step()
+        assert ans1 is not None
+        assert ans1.card_name == "Green Bomber"
+        assert ans1.observation_count == 1
+        assert encode_calls["count"] >= 1
+        initial_encodes = encode_calls["count"]
+
+        # Frame 2: Identical frame bundle
+        ans2, _ = pipeline.step()
+        assert ans2 is not None
+        assert ans2.card_name == "Green Bomber"
+        # Observation count MUST NOT increase on unchanged frame
+        assert ans2.observation_count == 1, "Repeated identical frames must not artificially increase temporal observation count!"
+        # Encoder MUST NOT be called again
+        assert encode_calls["count"] == initial_encodes, "Adaptive inference must skip DINOv2 encode on unchanged card frame!"
+    finally:
+        pipeline.capture.capture_quiz_bundle = orig_capture
+
+
+def test_refreshed_ocr_candidates_synchronize_pipeline(pipeline):
+    """
+    Verifies that when PerceptionEngine signals REFRESHED candidates on grid change:
+    1. Pipeline updates self.current_candidates.
+    2. Pending question options and valid IDs in AdaptiveLearning are safely updated.
+    3. The original blurred question image is NOT overwritten.
+    """
+    options_a = ["Green Bomber", "Harmonious Soul", "Shadow Duelist", "Soul King"]
+    bundle_a = create_mock_quiz_frame("Green Bomber", options_a)
+
+    options_b = ["Green Bomber", "Harmonious Soul", "Celestial Warrior", "Soul King"]
+    bundle_b = create_mock_quiz_frame("Green Bomber", options_b)
+
+    orig_capture = pipeline.capture.capture_quiz_bundle
+    pipeline.reset()
+
+    try:
+        # Frame 1: Initial question with options_a
+        pipeline.capture.capture_quiz_bundle = lambda *args, **kwargs: bundle_a
+        ans1, _ = pipeline.step()
+        assert ans1 is not None
+        assert "Celestial Warrior" not in pipeline.current_candidates
+        assert pipeline.adaptive_learning.pending_question is not None
+        assert "Celestial Warrior" not in pipeline.adaptive_learning.pending_question.option_names
+        orig_blurred_img = pipeline.adaptive_learning.pending_question.blurred_image.copy()
+
+        # Frame 2: Options grid changes to options_b
+        pipeline.capture.capture_quiz_bundle = lambda *args, **kwargs: bundle_b
+        ans2, _ = pipeline.step()
+
+        # Verify pipeline.current_candidates updated
+        current_names = [c.canonical_name for c in pipeline.current_candidates]
+        assert "Celestial Warrior" in current_names, "Pipeline must update current_candidates when grid changes!"
+
+        # Verify pending question in adaptive learning updated options without touching blurred image
+        pending_names = pipeline.adaptive_learning.pending_question.option_names
+        assert "Celestial Warrior" in pending_names, "AdaptiveLearning pending question options must be updated!"
+        np.testing.assert_array_equal(
+            pipeline.adaptive_learning.pending_question.blurred_image,
+            orig_blurred_img,
+            err_msg="Original blurred question image must never be overwritten on subsequent inference frames!"
+        )
+    finally:
+        pipeline.capture.capture_quiz_bundle = orig_capture
+
+
+def test_invalid_ocr_grid_change_invalidates_stale_candidates(pipeline):
+    """
+    Verifies that when a grid change occurs but OCR fails to resolve 4 valid candidates:
+    1. PerceptionFrame signals OCRSource.INVALID.
+    2. Stale cached candidates are cleared and pipeline.current_candidates is emptied.
+    3. Stale candidates are not incorrectly reused.
+    """
+    from src.ai.perception_engine import OCRSource
+
+    options_a = ["Green Bomber", "Harmonious Soul", "Shadow Duelist", "Soul King"]
+    bundle_a = create_mock_quiz_frame("Green Bomber", options_a)
+
+    # Frame with black/unreadable buttons
+    black_buttons = [np.zeros((60, 140, 3), dtype=np.uint8) for _ in range(4)]
+    top_row = np.hstack([black_buttons[0], black_buttons[1]])
+    bot_row = np.hstack([black_buttons[2], black_buttons[3]])
+    options_frame_invalid = np.vstack([top_row, bot_row])
+
+    bundle_invalid = {
+        "game_frame": bundle_a["game_frame"],
+        "card_frame": bundle_a["card_frame"],
+        "options_frame": options_frame_invalid,
+        "button_frames": black_buttons,
+        "timer_frame": None,
+        "banner_frame": None
+    }
+
+    orig_capture = pipeline.capture.capture_quiz_bundle
+    pipeline.reset()
+
+    try:
+        # Frame 1: Valid initial question
+        pipeline.capture.capture_quiz_bundle = lambda *args, **kwargs: bundle_a
+        ans1, _ = pipeline.step()
+        assert len(pipeline.current_candidates) == 4
+
+        # Frame 2: Grid changed to unreadable/invalid buttons
+        pipeline.capture.capture_quiz_bundle = lambda *args, **kwargs: bundle_invalid
+        ans2, _ = pipeline.step()
+
+        # Pipeline current_candidates must be cleared (not stale!)
+        assert len(pipeline.current_candidates) == 0, "Stale candidates must be cleared when OCR fails on grid change!"
+    finally:
+        pipeline.capture.capture_quiz_bundle = orig_capture
+
 
 
 
