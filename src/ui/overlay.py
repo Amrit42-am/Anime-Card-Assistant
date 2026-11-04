@@ -7,7 +7,7 @@ side of the desktop to display real-time card predictions without obstructing ga
 """
 
 import logging
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 from PySide6.QtCore import Qt, QPoint
 from PySide6.QtGui import QMouseEvent, QColor
@@ -21,6 +21,7 @@ from src.core.worker import PipelineWorker
 from src.core.decision_engine import AnswerResult
 from src.capture.calibration import CalibrationDialog
 from src.ui.components import ConfidenceBadge, SourceBadge, CorrectionDialog
+from src.ocr.option_reader import normalize_detected_options
 
 logger = logging.getLogger("overlay_ui")
 
@@ -162,9 +163,14 @@ class FloatingOverlay(QWidget):
         div1.setStyleSheet("background-color: #334155;")
         layout.addWidget(div1)
 
-        # 2. Hero Prediction Area
+        # 2. Hero Prediction Area (AI Visual Guess / Confident Prediction)
         hero_layout = QVBoxLayout()
         hero_layout.setSpacing(6)
+
+        self.section_header_label = QLabel("AI VISUAL GUESS")
+        self.section_header_label.setAlignment(Qt.AlignCenter)
+        self.section_header_label.setStyleSheet("color: #38bdf8; font-size: 10px; font-weight: bold; letter-spacing: 0.8px;")
+        hero_layout.addWidget(self.section_header_label)
 
         self.state_label = QLabel("MONITORING ROBLOX...")
         self.state_label.setAlignment(Qt.AlignCenter)
@@ -182,8 +188,14 @@ class FloatingOverlay(QWidget):
         badges_row.setSpacing(6)
         self.conf_badge = ConfidenceBadge()
         self.source_badge = SourceBadge()
+        self.visual_sim_label = QLabel("Visual: —")
+        self.visual_sim_label.setStyleSheet("color: #94a3b8; font-size: 10px; font-weight: bold; background: rgba(148, 163, 184, 0.15); border-radius: 3px; padding: 2px 4px;")
+        self.constraint_badge = QLabel("UNCONSTRAINED")
+        self.constraint_badge.setStyleSheet("color: #94a3b8; font-size: 9px; font-weight: bold; background: rgba(148, 163, 184, 0.15); border-radius: 3px; padding: 2px 4px;")
         badges_row.addWidget(self.conf_badge)
         badges_row.addWidget(self.source_badge)
+        badges_row.addWidget(self.visual_sim_label)
+        badges_row.addWidget(self.constraint_badge)
         hero_layout.addLayout(badges_row)
 
         self.slot_badge = QLabel("")
@@ -212,6 +224,10 @@ class FloatingOverlay(QWidget):
         layout.addLayout(hero_layout)
 
         # 3. Candidate Options Box (2x2 Grid)
+        self.options_header_label = QLabel("DETECTED GAME OPTIONS (0/4)")
+        self.options_header_label.setStyleSheet("color: #94a3b8; font-size: 11px; font-weight: bold; letter-spacing: 0.5px; padding-left: 2px;")
+        layout.addWidget(self.options_header_label)
+
         self.cand_frame = QFrame()
         self.cand_frame.setStyleSheet("background-color: rgba(15, 23, 42, 140); border-radius: 8px; padding: 6px;")
         self.cand_layout = QGridLayout(self.cand_frame)
@@ -337,6 +353,10 @@ class FloatingOverlay(QWidget):
             self.state_label.setText("READING ANSWER OPTIONS")
             self.state_label.setStyleSheet("color: #38bdf8; font-weight: bold;")
 
+        # When transitioning between rounds or waiting for quiz, reset old option slots
+        if status in ("IDLE", "WAITING FOR QUIZ", "SEARCHING", "NEXT_QUESTION"):
+            self.clear_options_display()
+
     def on_worker_fps(self, fps: float):
         self.fps_label.setText(f"FPS: {fps:.1f}")
 
@@ -345,34 +365,39 @@ class FloatingOverlay(QWidget):
         self.conf_badge.set_confidence(0.0, "ERROR")
 
     def display_answer(self, result: AnswerResult):
-        """Displays high-confidence predicted card."""
+        """Displays predicted card with separate visual and option sections."""
         self.last_result = result
         self.auto_learn_banner.setVisible(False)
 
-        stage = getattr(result, "prediction_stage", "CONFIDENT")
-        obs_count = getattr(result, "observation_count", 1)
-        agreement = getattr(result, "temporal_agreement", 1.0)
+        is_constrained = bool(getattr(result, "is_constrained", False))
+        vis_sim = float(getattr(result, "visual_similarity", result.raw_score))
+        detected = getattr(result, "detected_options", None) or normalize_detected_options(getattr(result, "candidates", None))
+        valid_count = sum(1 for opt in detected if opt.get("is_valid") and opt.get("card_id") is not None)
 
-        if stage == "PROVISIONAL":
-            self.state_label.setText("PROVISIONAL ANSWER (Frame 1)")
-            self.state_label.setStyleSheet("color: #38bdf8; font-weight: bold;")
-        elif stage == "STABILIZING":
-            self.state_label.setText(f"STABILIZING ({obs_count} frames, {agreement*100:.0f}%)")
-            self.state_label.setStyleSheet("color: #a78bfa; font-weight: bold;")
-        else:
-            self.state_label.setText(f"CONFIDENT ANSWER ({agreement*100:.0f}% Agreement)")
+        if is_constrained and result.button_slot is not None:
+            self.section_header_label.setText("AI CONFIDENT PREDICTION")
+            self.section_header_label.setStyleSheet("color: #4ade80; font-size: 10px; font-weight: bold; letter-spacing: 0.8px;")
+            self.state_label.setText(f"CONFIDENT ANSWER ({result.temporal_agreement*100:.0f}% Agreement)")
             self.state_label.setStyleSheet("color: #4ade80; font-weight: bold;")
+            self.card_name_label.setText(result.card_name.upper())
+            self.card_name_label.setStyleSheet("font-size: 21px; font-weight: 800; color: #4ade80; padding: 4px 0;")
 
-        self.card_name_label.setText(result.card_name.upper())
-        self.card_name_label.setStyleSheet("font-size: 21px; font-weight: 800; color: #4ade80; padding: 4px 0;")
-
-        # Update slot badge
-        slot_names = ["TOP-LEFT [TL]", "TOP-RIGHT [TR]", "BOTTOM-LEFT [BL]", "BOTTOM-RIGHT [BR]"]
-        if getattr(result, "button_slot", None) is not None and 0 <= result.button_slot < 4:
+            slot_names = ["TOP-LEFT [TL]", "TOP-RIGHT [TR]", "BOTTOM-LEFT [BL]", "BOTTOM-RIGHT [BR]"]
             self.slot_badge.setText(f"TARGET SLOT: {slot_names[result.button_slot]}")
             self.slot_badge.setVisible(True)
+            self.constraint_badge.setText("4/4 CONSTRAINED")
+            self.constraint_badge.setStyleSheet("color: #4ade80; font-size: 9px; font-weight: bold; background: rgba(34, 197, 94, 0.15); border-radius: 3px; padding: 2px 4px;")
         else:
+            # Unconstrained provisional guess
+            self.section_header_label.setText(f"AI PROVISIONAL VISUAL GUESS ({valid_count}/4 Options)")
+            self.section_header_label.setStyleSheet("color: #38bdf8; font-size: 10px; font-weight: bold; letter-spacing: 0.8px;")
+            self.state_label.setText(f"OCR IN PROGRESS ({valid_count}/4 VALID)")
+            self.state_label.setStyleSheet("color: #38bdf8; font-weight: bold;")
+            self.card_name_label.setText(f"{result.card_name.upper()} ?")
+            self.card_name_label.setStyleSheet("font-size: 20px; font-weight: 800; color: #fbbf24; padding: 4px 0;")
             self.slot_badge.setVisible(False)
+            self.constraint_badge.setText(f"{valid_count}/4 UNCONSTRAINED")
+            self.constraint_badge.setStyleSheet("color: #94a3b8; font-size: 9px; font-weight: bold; background: rgba(148, 163, 184, 0.15); border-radius: 3px; padding: 2px 4px;")
 
         # Update runner-up
         if getattr(result, "runner_up_name", None):
@@ -381,25 +406,31 @@ class FloatingOverlay(QWidget):
         else:
             self.runner_up_label.setText(f"Margin: +{result.margin:.2f}")
 
-        self.conf_badge.set_confidence(result.confidence, result.confidence_level)
+        self.conf_badge.set_confidence(result.confidence, result.confidence_level if is_constrained else "PROVISIONAL")
         self.source_badge.set_source(result.matched_from)
+        self.visual_sim_label.setText(f"Visual: {vis_sim*100:.1f}%")
         self.latency_label.setText(f"Latency: {result.processing_time_ms:.0f} ms")
 
         self.update_candidates_display(result)
 
     def display_uncertain(self, result: AnswerResult):
-        """Displays prediction when confidence is low or ambiguous."""
+        """Displays provisional prediction when options are resolving or match is ambiguous."""
         self.last_result = result
         self.auto_learn_banner.setVisible(False)
 
-        # Distinguish WAITING FOR OPTIONS from actual matches
         conf_lvl = getattr(result, "confidence_level", "UNCERTAIN")
         is_generic_waiting = (
             not result.card_name or
             result.card_name.lower().strip() in ("waiting for quiz...", "waiting for valid options...")
         )
 
+        detected = getattr(result, "detected_options", None) or normalize_detected_options(getattr(result, "candidates", None))
+        valid_count = sum(1 for opt in detected if opt.get("is_valid") and opt.get("card_id") is not None)
+        vis_sim = float(getattr(result, "visual_similarity", result.raw_score))
+
         if is_generic_waiting:
+            self.section_header_label.setText("AI VISUAL GUESS")
+            self.section_header_label.setStyleSheet("color: #94a3b8; font-size: 10px; font-weight: bold; letter-spacing: 0.8px;")
             self.state_label.setText(conf_lvl if conf_lvl else "WAITING FOR VALID OPTIONS")
             self.state_label.setStyleSheet("color: #38bdf8; font-weight: bold;")
             self.card_name_label.setText("WAITING FOR VALID OPTIONS...")
@@ -407,28 +438,25 @@ class FloatingOverlay(QWidget):
             self.slot_badge.setVisible(False)
             self.conf_badge.set_confidence(0.0, conf_lvl)
             self.source_badge.set_source("ocr_scanning")
+            self.visual_sim_label.setText("Visual: —")
+            self.constraint_badge.setText(f"{valid_count}/4 OPTIONS")
+            self.constraint_badge.setStyleSheet("color: #94a3b8; font-size: 9px; font-weight: bold; background: rgba(148, 163, 184, 0.15); border-radius: 3px; padding: 2px 4px;")
             self.runner_up_label.setText(result.explanation or "Resolving 4 answer button options...")
             self.latency_label.setText(f"Latency: {result.processing_time_ms:.0f} ms")
             self.update_candidates_display(result)
             return
 
         # Provisional visual guess available: always display AI guess even if options are resolving!
-        if "WAITING" in conf_lvl or "OCR" in conf_lvl:
-            self.state_label.setText("PROVISIONAL VISUAL GUESS")
-            self.state_label.setStyleSheet("color: #38bdf8; font-weight: bold;")
-        else:
-            self.state_label.setText("UNCERTAIN MATCH")
-            self.state_label.setStyleSheet("color: #f59e0b; font-weight: bold;")
+        self.section_header_label.setText(f"AI PROVISIONAL VISUAL GUESS ({valid_count}/4 Options)")
+        self.section_header_label.setStyleSheet("color: #38bdf8; font-size: 10px; font-weight: bold; letter-spacing: 0.8px;")
+        self.state_label.setText("PROVISIONAL MATCH (UNCERTAIN)")
+        self.state_label.setStyleSheet("color: #f59e0b; font-weight: bold;")
 
         self.card_name_label.setText(f"{result.card_name.upper()} ?")
         self.card_name_label.setStyleSheet("font-size: 20px; font-weight: 800; color: #fbbf24; padding: 4px 0;")
 
-        slot_names = ["TOP-LEFT [TL]", "TOP-RIGHT [TR]", "BOTTOM-LEFT [BL]", "BOTTOM-RIGHT [BR]"]
-        if getattr(result, "button_slot", None) is not None and 0 <= result.button_slot < 4:
-            self.slot_badge.setText(f"POSSIBLE SLOT: {slot_names[result.button_slot]}")
-            self.slot_badge.setVisible(True)
-        else:
-            self.slot_badge.setVisible(False)
+        # Incomplete options -> NEVER assign or show target slot!
+        self.slot_badge.setVisible(False)
 
         if getattr(result, "runner_up_name", None):
             score_str = f" ({result.runner_up_score:.2f})" if result.runner_up_score else ""
@@ -437,8 +465,11 @@ class FloatingOverlay(QWidget):
             self.runner_up_label.setText(result.explanation or f"Margin: +{result.margin:.2f}")
 
         display_conf = result.confidence if result.confidence > 0 else 0.40
-        self.conf_badge.set_confidence(display_conf, "PROVISIONAL" if "WAITING" in conf_lvl else "UNCERTAIN")
+        self.conf_badge.set_confidence(display_conf, "PROVISIONAL")
         self.source_badge.set_source(result.matched_from)
+        self.visual_sim_label.setText(f"Visual: {vis_sim*100:.1f}%" if vis_sim > 0 else "Visual: —")
+        self.constraint_badge.setText(f"{valid_count}/4 UNCONSTRAINED")
+        self.constraint_badge.setStyleSheet("color: #94a3b8; font-size: 9px; font-weight: bold; background: rgba(148, 163, 184, 0.15); border-radius: 3px; padding: 2px 4px;")
         self.latency_label.setText(f"Latency: {result.processing_time_ms:.0f} ms")
         self.update_candidates_display(result)
 
@@ -475,37 +506,131 @@ class FloatingOverlay(QWidget):
         self.btn_compact.setText("▴ Expand" if self.is_compact else "▾ Compact")
         self.adjustSize()
 
-    def update_candidates_display(self, result: AnswerResult):
-        candidates = result.candidates or [result.card_name]
+    def clear_options_display(self):
+        """Resets all 4 answer option positions and highlights for a new round."""
         slot_prefixes = ["[TL]", "[TR]", "[BL]", "[BR]"]
-        assigned_slot = getattr(result, "button_slot", None)
+        self.options_header_label.setText("DETECTED GAME OPTIONS (0/4)")
+        self.slot_badge.setVisible(False)
+        for i in range(4):
+            self.cand_labels[i].setText(f"{slot_prefixes[i]} —")
+            self.cand_labels[i].setStyleSheet(
+                "color: #475569; background: rgba(15, 23, 42, 80); "
+                "border: 1px solid rgba(51, 65, 85, 60); border-radius: 6px; padding: 6px 8px;"
+            )
+
+    def update_candidates_display(self, result: Optional[AnswerResult]):
+        """
+        Renders the 4 candidate option buttons strictly using their explicit slot_index (TL, TR, BL, BR).
+        Never shifts options to different slots.
+        Never inserts the visual prediction as a fallback option.
+        Never highlights a button as target unless candidate-constrained matching succeeded with 4 valid options.
+        """
+        slot_prefixes = ["[TL]", "[TR]", "[BL]", "[BR]"]
+        if result is None:
+            self.clear_options_display()
+            return
+
+        detected = getattr(result, "detected_options", None)
+        if not detected:
+            detected = normalize_detected_options(getattr(result, "candidates", None))
+
+        valid_count = sum(1 for opt in detected if opt.get("is_valid") and opt.get("card_id") is not None)
+        is_constrained = bool(getattr(result, "is_constrained", False) and valid_count == 4)
+        assigned_slot = getattr(result, "button_slot", None) if is_constrained else None
+
+        self.options_header_label.setText(
+            f"DETECTED GAME OPTIONS ({valid_count}/4 Valid)"
+            if valid_count > 0 else
+            "DETECTED GAME OPTIONS (0/4 Valid)"
+        )
 
         for i in range(4):
             prefix = slot_prefixes[i]
-            if i < len(candidates):
-                name = candidates[i]
-                is_winner = False
-                if assigned_slot is not None and assigned_slot == i:
-                    is_winner = True
-                elif name.lower().strip() == result.card_name.lower().strip():
-                    is_winner = True
+            opt = detected[i] if i < len(detected) else {}
+            name = opt.get("canonical_name") or opt.get("raw_text") or ""
+            is_valid = bool(opt.get("is_valid", False))
 
-                marker = "➤ " if is_winner else "   "
-                self.cand_labels[i].setText(f"{prefix} {marker}{name}")
-                if is_winner:
-                    self.cand_labels[i].setStyleSheet(
-                        "color: #4ade80; font-weight: bold; background: rgba(34, 197, 94, 0.25); "
-                        "border: 1px solid #22c55e; border-radius: 6px; padding: 6px 8px;"
-                    )
-                else:
-                    self.cand_labels[i].setStyleSheet(
-                        "color: #94a3b8; font-weight: normal; background: rgba(30, 41, 59, 120); "
-                        "border: 1px solid rgba(71, 85, 105, 100); border-radius: 6px; padding: 6px 8px;"
-                    )
-            else:
+            if not name:
                 self.cand_labels[i].setText(f"{prefix} —")
                 self.cand_labels[i].setStyleSheet(
-                    "color: #475569; background: rgba(15, 23, 42, 80); border: 1px solid rgba(51, 65, 85, 60); border-radius: 6px; padding: 6px 8px;"
+                    "color: #475569; background: rgba(15, 23, 42, 80); "
+                    "border: 1px solid rgba(51, 65, 85, 60); border-radius: 6px; padding: 6px 8px;"
+                )
+                continue
+
+            # Only highlight as winner if constrained (4/4 options valid) and slot matches!
+            is_winner = (is_constrained and assigned_slot is not None and assigned_slot == i)
+            marker = "➤ " if is_winner else "   "
+
+            self.cand_labels[i].setText(f"{prefix} {marker}{name}")
+            if is_winner:
+                self.cand_labels[i].setStyleSheet(
+                    "color: #4ade80; font-weight: bold; background: rgba(34, 197, 94, 0.25); "
+                    "border: 1px solid #22c55e; border-radius: 6px; padding: 6px 8px;"
+                )
+            elif is_valid:
+                self.cand_labels[i].setStyleSheet(
+                    "color: #cbd5e1; font-weight: normal; background: rgba(30, 41, 59, 140); "
+                    "border: 1px solid rgba(71, 85, 105, 120); border-radius: 6px; padding: 6px 8px;"
+                )
+            else:
+                self.cand_labels[i].setStyleSheet(
+                    "color: #94a3b8; font-style: italic; background: rgba(30, 41, 59, 100); "
+                    "border: 1px dashed rgba(71, 85, 105, 100); border-radius: 6px; padding: 6px 8px;"
+                )
+
+    def display_result_screen(
+        self,
+        correct_slot: int,
+        correct_name: str,
+        wrong_slot: Optional[int] = None,
+        detected_options: Optional[List[Dict[str, Any]]] = None
+    ):
+        """
+        Renders the verified result screen:
+        - Highlights correct_slot in GREEN
+        - Highlights wrong_slot in RED (if user clicked wrong option)
+        - Preserves all four options in their exact positions without shifting.
+        """
+        slot_prefixes = ["[TL]", "[TR]", "[BL]", "[BR]"]
+        self.section_header_label.setText("ROUND RESULT REVEALED")
+        self.section_header_label.setStyleSheet("color: #a78bfa; font-size: 10px; font-weight: bold; letter-spacing: 0.8px;")
+        self.state_label.setText("CORRECT ANSWER VERIFIED")
+        self.state_label.setStyleSheet("color: #4ade80; font-weight: bold;")
+        self.card_name_label.setText(correct_name.upper())
+        self.card_name_label.setStyleSheet("font-size: 21px; font-weight: 800; color: #4ade80; padding: 4px 0;")
+
+        if 0 <= correct_slot < 4:
+            self.slot_badge.setText(f"CORRECT ANSWER: {slot_prefixes[correct_slot]}")
+            self.slot_badge.setVisible(True)
+
+        norm_opts = normalize_detected_options(detected_options) if detected_options else None
+
+        for i in range(4):
+            prefix = slot_prefixes[i]
+            if norm_opts:
+                opt = norm_opts[i]
+                name = opt.get("canonical_name") or opt.get("raw_text") or (correct_name if i == correct_slot else "—")
+            else:
+                name = correct_name if i == correct_slot else "—"
+
+            if i == correct_slot:
+                self.cand_labels[i].setText(f"{prefix} ✓ {name}")
+                self.cand_labels[i].setStyleSheet(
+                    "color: #4ade80; font-weight: bold; background: rgba(34, 197, 94, 0.35); "
+                    "border: 2px solid #22c55e; border-radius: 6px; padding: 6px 8px;"
+                )
+            elif wrong_slot is not None and i == wrong_slot:
+                self.cand_labels[i].setText(f"{prefix} ✕ {name}")
+                self.cand_labels[i].setStyleSheet(
+                    "color: #f87171; font-weight: bold; background: rgba(239, 68, 68, 0.25); "
+                    "border: 2px solid #ef4444; border-radius: 6px; padding: 6px 8px;"
+                )
+            else:
+                self.cand_labels[i].setText(f"{prefix}   {name}")
+                self.cand_labels[i].setStyleSheet(
+                    "color: #94a3b8; font-weight: normal; background: rgba(30, 41, 59, 120); "
+                    "border: 1px solid rgba(71, 85, 105, 100); border-radius: 6px; padding: 6px 8px;"
                 )
 
     def on_confirm_answer(self):

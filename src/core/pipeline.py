@@ -22,7 +22,7 @@ from src.capture.window_tracker import WindowTracker
 from src.capture.game_locator import GameLocator
 from src.capture.screen_capture import ScreenCapture
 from src.detection.question_detector import QuestionDetector, QuestionEvent
-from src.ocr.option_reader import OptionReader, CandidateOption
+from src.ocr.option_reader import OptionReader, CandidateOption, normalize_detected_options
 from src.recognition.image_encoder import BaseImageEncoder
 from src.recognition.image_matcher import ImageMatcher
 from src.memory.blur_memory import BlurMemorySystem
@@ -337,6 +337,9 @@ class QuizPipeline:
                     status = "uncertain"
                     final_conf = min(verdict.calibrated_confidence, 0.40)
 
+                normalized_cands = normalize_detected_options(cands)
+                canonical_cands = [opt["canonical_name"] if opt["is_valid"] else "" for opt in normalized_cands]
+
                 stab_result = AnswerResult(
                     status=status,
                     card_name=stab_ans.card_name,
@@ -346,18 +349,21 @@ class QuizPipeline:
                     matched_from=stab_ans.source,
                     raw_score=stab_ans.raw_match.get("raw_score", stab_ans.confidence),
                     margin=verdict.margin_of_victory,
-                    candidates=[c.canonical_name for c in cands if c.canonical_name],
+                    candidates=canonical_cands,
                     alternatives=stab_ans.raw_match.get("alternatives", []),
                     explanation=f"{verdict.explanation} (Obs: {obs_count}, Agreement: {agreement_ratio*100:.0f}%)",
                     processing_time_ms=round(step_elapsed_ms, 2),
-                    button_slot=stab_ans.slot_index,
+                    button_slot=stab_ans.slot_index if is_constrained else None,
                     runner_up_name=stab_ans.runner_up_name,
                     runner_up_score=stab_ans.runner_up_score,
                     captured_image=self.last_result.captured_image,
                     query_embedding=stab_ans.query_embedding,
                     prediction_stage=stage,
                     temporal_agreement=round(agreement_ratio, 3),
-                    observation_count=obs_count
+                    observation_count=obs_count,
+                    detected_options=normalized_cands,
+                    visual_similarity=float(stab_ans.raw_match.get("raw_score", stab_ans.confidence)),
+                    is_constrained=is_constrained
                 )
                 self.last_result = stab_result
                 return stab_result, None
@@ -429,6 +435,9 @@ class QuizPipeline:
                         status = "uncertain"
                         final_conf = min(verdict.calibrated_confidence, 0.40)
 
+                    normalized_cands = normalize_detected_options(cands)
+                    canonical_cands = [opt["canonical_name"] if opt["is_valid"] else "" for opt in normalized_cands]
+
                     stab_result = AnswerResult(
                         status=status,
                         card_name=stab_ans.card_name,
@@ -438,18 +447,21 @@ class QuizPipeline:
                         matched_from=stab_ans.source,
                         raw_score=stab_ans.raw_match.get("raw_score", stab_ans.confidence),
                         margin=verdict.margin_of_victory,
-                        candidates=[c.canonical_name for c in cands if c.canonical_name],
+                        candidates=canonical_cands,
                         alternatives=stab_ans.raw_match.get("alternatives", []),
                         explanation=f"{verdict.explanation} (Obs: {obs_count}, Agreement: {agreement_ratio*100:.0f}%)",
                         processing_time_ms=frame_result.processing_time_ms,
-                        button_slot=stab_ans.slot_index,
+                        button_slot=stab_ans.slot_index if is_constrained else None,
                         runner_up_name=stab_ans.runner_up_name,
                         runner_up_score=stab_ans.runner_up_score,
                         captured_image=p_frame.card_frame.copy(),
                         query_embedding=stab_ans.query_embedding,
                         prediction_stage=stage,
                         temporal_agreement=round(agreement_ratio, 3),
-                        observation_count=obs_count
+                        observation_count=obs_count,
+                        detected_options=normalized_cands,
+                        visual_similarity=float(stab_ans.raw_match.get("raw_score", stab_ans.confidence)),
+                        is_constrained=is_constrained
                     )
 
                     self.last_result = stab_result

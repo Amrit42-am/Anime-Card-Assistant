@@ -57,6 +57,9 @@ except ImportError:
     TESSERACT_AVAILABLE = False
 
 
+SLOT_NAMES = ["TL", "TR", "BL", "BR"]
+
+
 @dataclass
 class CandidateOption:
     slot_index: int
@@ -66,6 +69,64 @@ class CandidateOption:
     ocr_confidence: float = 0.0
     fuzzy_score: float = 0.0
     is_valid: bool = False
+    position: str = ""
+
+    def __post_init__(self):
+        if not self.position and 0 <= self.slot_index < len(SLOT_NAMES):
+            self.position = SLOT_NAMES[self.slot_index]
+
+    def to_dict(self) -> Dict[str, Any]:
+        pos = self.position or (SLOT_NAMES[self.slot_index] if 0 <= self.slot_index < len(SLOT_NAMES) else "")
+        return {
+            "slot_index": self.slot_index,
+            "position": pos,
+            "raw_text": self.raw_text,
+            "canonical_name": self.canonical_name,
+            "card_id": self.card_id,
+            "ocr_confidence": round(float(self.ocr_confidence), 3),
+            "fuzzy_score": round(float(self.fuzzy_score), 2),
+            "is_valid": bool(self.is_valid)
+        }
+
+
+def normalize_detected_options(candidates: Optional[List[Any]]) -> List[Dict[str, Any]]:
+    """
+    Normalizes candidate options into exactly 4 fixed slots [TL, TR, BL, BR].
+    Guarantees that index 0 is always TL, 1 is always TR, 2 is always BL, and 3 is always BR.
+    Missing or unmapped slots are represented as invalid empty entries.
+    """
+    slot_map: Dict[int, Dict[str, Any]] = {}
+    if candidates:
+        for c in candidates:
+            if hasattr(c, "to_dict"):
+                d = c.to_dict()
+            elif isinstance(c, dict):
+                d = dict(c)
+            else:
+                continue
+
+            idx = d.get("slot_index")
+            if idx is not None and 0 <= idx < 4:
+                if not d.get("position"):
+                    d["position"] = SLOT_NAMES[idx]
+                slot_map[idx] = d
+
+    out: List[Dict[str, Any]] = []
+    for idx in range(4):
+        if idx in slot_map:
+            out.append(slot_map[idx])
+        else:
+            out.append({
+                "slot_index": idx,
+                "position": SLOT_NAMES[idx],
+                "raw_text": "",
+                "canonical_name": "",
+                "card_id": None,
+                "ocr_confidence": 0.0,
+                "fuzzy_score": 0.0,
+                "is_valid": False
+            })
+    return out
 
 
 class OptionReader:

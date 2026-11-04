@@ -6,14 +6,14 @@ Fuses candidate OCR evidence, visual embeddings from DINOv2, and verified
 learned blur memory to identify cards within the active quiz window.
 """
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 import logging
 import time
 from typing import List, Dict, Any, Optional
 
 import numpy as np
 
-from src.ocr.option_reader import OptionReader, CandidateOption
+from src.ocr.option_reader import OptionReader, CandidateOption, normalize_detected_options
 from src.recognition.image_encoder import BaseImageEncoder
 from src.recognition.image_matcher import ImageMatcher
 from src.memory.blur_memory import BlurMemorySystem
@@ -33,7 +33,7 @@ class AnswerResult:
     matched_from: str      # "learned_memory", "synthetic_blurs", "fallback_all_cards"
     raw_score: float
     margin: float
-    candidates: List[str]
+    candidates: List[str]  # 4-slot list: [TL, TR, BL, BR]
     alternatives: List[Dict[str, Any]]
     explanation: str
     processing_time_ms: float
@@ -45,6 +45,9 @@ class AnswerResult:
     prediction_stage: str = "CONFIDENT"  # "PROVISIONAL", "STABILIZING", "CONFIDENT", "UNCERTAIN"
     temporal_agreement: float = 1.0
     observation_count: int = 1
+    detected_options: List[Dict[str, Any]] = field(default_factory=list)
+    visual_similarity: float = 0.0
+    is_constrained: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -105,13 +108,16 @@ class AnswerDecisionEngine:
                 matched_from="none",
                 raw_score=0.0,
                 margin=0.0,
-                candidates=[],
+                candidates=["", "", "", ""],
                 alternatives=[],
                 explanation="Captured card frame was empty or missing.",
                 processing_time_ms=0.0,
                 prediction_stage="UNCERTAIN",
                 temporal_agreement=temporal_agreement,
-                observation_count=observation_count
+                observation_count=observation_count,
+                detected_options=normalize_detected_options([]),
+                visual_similarity=0.0,
+                is_constrained=False
             )
 
         # 1. OCR Extraction (reuse precomputed if provided, otherwise extract)
@@ -133,6 +139,11 @@ class AnswerDecisionEngine:
         )
 
         elapsed_ms = (time.time() - t0) * 1000.0
+        normalized_opts = normalize_detected_options(resolved_candidates)
+        canonical_candidates = [opt["canonical_name"] if opt["is_valid"] else "" for opt in normalized_opts]
+        valid_count = sum(1 for opt in normalized_opts if opt["is_valid"] and opt["card_id"] is not None)
+        unique_ids = set(opt["card_id"] for opt in normalized_opts if opt["card_id"] is not None)
+        is_constrained = (valid_count == 4 and len(unique_ids) == 4 and reasoned.slot_index is not None)
 
         return AnswerResult(
             status=reasoned.status,
@@ -143,16 +154,19 @@ class AnswerDecisionEngine:
             matched_from=reasoned.source,
             raw_score=reasoned.raw_match.get("raw_score", reasoned.confidence),
             margin=reasoned.margin,
-            candidates=[c.canonical_name for c in resolved_candidates if c.canonical_name],
+            candidates=canonical_candidates,
             alternatives=reasoned.raw_match.get("alternatives", []),
             explanation=reasoned.raw_match.get("explanation", ""),
             processing_time_ms=round(elapsed_ms, 2),
-            button_slot=reasoned.slot_index,
+            button_slot=reasoned.slot_index if is_constrained else None,
             runner_up_name=reasoned.runner_up_name,
             runner_up_score=reasoned.runner_up_score,
             captured_image=card_frame.copy(),
             query_embedding=reasoned.query_embedding,
             prediction_stage=prediction_stage,
             temporal_agreement=round(temporal_agreement, 3),
-            observation_count=observation_count
+            observation_count=observation_count,
+            detected_options=normalized_opts,
+            visual_similarity=float(reasoned.raw_match.get("raw_score", reasoned.confidence)),
+            is_constrained=is_constrained
         )

@@ -7,13 +7,13 @@ handles multi-line text and typos via strict fuzzy matching, compares embeddings
 against synthetic blur profiles and verified blur memory, and resolves 2x2 grid slots.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 from typing import List, Optional, Dict, Any
 import numpy as np
 from rapidfuzz import fuzz
 
-from src.ocr.option_reader import CandidateOption, OptionReader
+from src.ocr.option_reader import CandidateOption, OptionReader, normalize_detected_options
 from src.recognition.image_matcher import ImageMatcher
 from src.recognition.image_encoder import BaseImageEncoder
 from src.ai.confidence_engine import ConfidenceEngine
@@ -37,6 +37,7 @@ class ReasonedAnswer:
     confidence_level: str = "MEDIUM"  # "HIGH", "MEDIUM", "LOW", "UNCERTAIN"
     query_embedding: Optional[np.ndarray] = None
     captured_image: Optional[np.ndarray] = None
+    detected_options: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class CandidateReasoner:
@@ -167,9 +168,12 @@ class CandidateReasoner:
                 assigned_slot = best_slot
 
         # Slot assignment & candidate restriction verification:
-        # If fewer than 4 distinct candidates resolved, provide a provisional visual guess,
-        # but NEVER mark as confident or final matched!
+        # If fewer than 4 distinct candidates resolved:
+        # - Never assign a final answer button slot (assigned_slot must be None)
+        # - Never mark as confident or final matched
+        # - Provide a provisional visual guess clearly marked as unconstrained
         if not is_constrained:
+            assigned_slot = None
             is_confident = False
             status = "uncertain"
             slot_labels = ["TL", "TR", "BL", "BR"]
@@ -178,7 +182,7 @@ class CandidateReasoner:
                 if not any(c.slot_index == i and c.is_valid and c.card_id is not None for c in ocr_candidates)
             ]
             failed_str = f" (unresolved: {', '.join(failed_slots)})" if failed_slots else ""
-            confidence_level = "WAITING FOR VALID OPTIONS" if not ocr_candidates else "OCR RECOVERY"
+            confidence_level = "WAITING FOR VALID OPTIONS" if not valid_candidates else "OCR RECOVERY"
             explanation = f"Provisional visual match: {top_name} ({len(unique_ids)}/4 distinct options resolved{failed_str})"
             display_card_name = top_name
             calibrated_conf = min(verdict.calibrated_confidence, 0.45) if verdict.calibrated_confidence > 0 else 0.35
@@ -213,5 +217,6 @@ class CandidateReasoner:
             status=status,
             raw_match=match_res.to_dict() if hasattr(match_res, "to_dict") else dict(match_res),
             query_embedding=query_embedding.copy(),
-            captured_image=card_frame.copy()
+            captured_image=card_frame.copy(),
+            detected_options=normalize_detected_options(ocr_candidates)
         )
