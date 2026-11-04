@@ -88,26 +88,57 @@ class QuestionDetector:
         options_frame: np.ndarray,
         button_frames: Optional[List[np.ndarray]] = None
     ) -> bool:
-        """Verifies button slot boundaries in options area (supporting both 2x2 grid and options panel)."""
-        if button_frames and len(button_frames) == 4:
-            valid_btns = [b for b in button_frames if b is not None and b.size > 0 and (np.std(b) > 6.0 or np.mean(b) > 15.0)]
-            if len(valid_btns) == 4:
-                return True
-
-        if options_frame is None or options_frame.shape[0] < 40 or options_frame.shape[1] < 40:
+        """
+        Verifies authentic 2x2 quiz button structure in the options area.
+        Rejects plain lobby floors, walls, avatar textures, and solid menus.
+        """
+        if options_frame is None or options_frame.size == 0 or options_frame.ndim < 2:
             return False
+        if options_frame.shape[0] < 40 or options_frame.shape[1] < 40:
+            return False
+
+        # 1. Macro-level edge energy across options frame (Sobel gradients)
         gray = cv2.cvtColor(options_frame, cv2.COLOR_BGR2GRAY) if options_frame.ndim == 3 else options_frame
         sobel_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
         sobel_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
         edge_energy = float(np.mean(np.abs(sobel_y) + np.abs(sobel_x)))
-        return edge_energy > self.button_edge_threshold
+        if edge_energy < self.button_edge_threshold:
+            return False
+
+        # 2. Quadrant button validation across all 4 individual slots
+        if button_frames and len(button_frames) == 4:
+            valid_btn_count = 0
+            for b in button_frames:
+                if b is None or b.size == 0 or b.ndim < 2:
+                    continue
+                bh, bw = b.shape[:2]
+                if bh < 15 or bw < 30:
+                    continue
+                bg = cv2.cvtColor(b, cv2.COLOR_BGR2GRAY) if b.ndim == 3 else b
+                std_val = float(np.std(bg))
+                if std_val < 8.0:
+                    continue
+
+                # Measure edge density inside the button (text & borders)
+                b_edges = cv2.Canny(bg, 50, 150)
+                edge_density = float(np.count_nonzero(b_edges) / bg.size)
+                # Buttons with text/borders have structured edge density
+                if 0.012 <= edge_density <= 0.45:
+                    valid_btn_count += 1
+
+            if valid_btn_count < 4:
+                return False
+
+        return True
 
     def has_card_content(self, card_frame: np.ndarray) -> bool:
-        """Verifies card artwork box is not solid background."""
-        if card_frame is None or card_frame.size == 0:
+        """Verifies card artwork box is not solid background or blank screen."""
+        if card_frame is None or card_frame.size == 0 or card_frame.ndim < 2:
+            return False
+        if card_frame.shape[0] < 30 or card_frame.shape[1] < 30:
             return False
         gray = cv2.cvtColor(card_frame, cv2.COLOR_BGR2GRAY) if card_frame.ndim == 3 else card_frame
-        return float(np.std(gray)) > 8.0
+        return float(np.std(gray)) > 10.0
 
     @staticmethod
     def has_result_colors(button_frames: Optional[List[np.ndarray]]) -> Tuple[bool, bool]:

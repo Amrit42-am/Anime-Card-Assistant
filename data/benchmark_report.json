@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-11-04T00:03:47Z",
+  "timestamp": "2026-11-04T00:30:20Z",
   "model": "dinov2",
   "offline_integrity_verified": true,
   "verification_message": "All model checkpoints and embeddings verified locally",
@@ -29,78 +29,78 @@
     "avg_temporal_agreement": 1.0,
     "timing_breakdown": {
       "first_provisional_prediction": {
-        "mean_ms": 99.4,
-        "p50_ms": 93.34,
-        "p95_ms": 151.84,
-        "max_ms": 163.52
+        "mean_ms": 94.97,
+        "p50_ms": 83.06,
+        "p95_ms": 200.32,
+        "max_ms": 227.65
       },
       "subsequent_stabilization_frame": {
-        "mean_ms": 32.51,
-        "p50_ms": 32.51,
-        "p95_ms": 35.07,
-        "max_ms": 37.2
+        "mean_ms": 30.14,
+        "p50_ms": 30.38,
+        "p95_ms": 32.47,
+        "max_ms": 32.49
       },
       "simulated_display_capture": {
-        "mean_ms": 29.98,
-        "p50_ms": 26.55,
-        "p95_ms": 48.92,
-        "max_ms": 62.28
+        "mean_ms": 29.14,
+        "p50_ms": 25.63,
+        "p95_ms": 47.39,
+        "max_ms": 53.82
       }
     },
     "e2e_pipeline_step_latency": {
-      "mean_ms": 99.4,
-      "p50_ms": 93.34,
-      "p95_ms": 151.84,
-      "max_ms": 163.52
+      "mean_ms": 94.97,
+      "p50_ms": 83.06,
+      "p95_ms": 200.32,
+      "max_ms": 227.65
     },
     "component_latencies": {
       "1_display_capture": {
-        "mean_ms": 29.98,
-        "p50_ms": 26.55,
-        "p95_ms": 48.92,
-        "max_ms": 62.28
+        "mean_ms": 29.14,
+        "p50_ms": 25.63,
+        "p95_ms": 47.39,
+        "max_ms": 53.82
       },
       "2_game_localization": {
-        "mean_ms": 1.86,
-        "p50_ms": 0.77,
-        "p95_ms": 2.83,
-        "max_ms": 20.51
+        "mean_ms": 1.78,
+        "p50_ms": 0.68,
+        "p95_ms": 3.9,
+        "max_ms": 18.71
       },
       "3_perception_preprocessing": {
-        "mean_ms": 50.91,
-        "p50_ms": 41.96,
-        "p95_ms": 98.08,
-        "max_ms": 105.75
+        "mean_ms": 48.01,
+        "p50_ms": 32.26,
+        "p95_ms": 169.06,
+        "max_ms": 199.14
       },
       "4_ocr_extraction": {
-        "mean_ms": 37.54,
-        "p50_ms": 35.42,
-        "p95_ms": 47.97,
-        "max_ms": 52.75
+        "mean_ms": 27.19,
+        "p50_ms": 26.34,
+        "p95_ms": 33.97,
+        "max_ms": 49.0
       },
       "5_encoder_inference": {
-        "mean_ms": 26.52,
-        "p50_ms": 26.24,
-        "p95_ms": 28.13,
-        "max_ms": 28.41
+        "mean_ms": 23.64,
+        "p50_ms": 23.53,
+        "p95_ms": 25.67,
+        "max_ms": 26.59
       },
       "6_candidate_matching": {
-        "mean_ms": 0.14,
-        "p50_ms": 0.13,
-        "p95_ms": 0.18,
-        "max_ms": 0.2
+        "mean_ms": 0.12,
+        "p50_ms": 0.12,
+        "p95_ms": 0.17,
+        "max_ms": 0.17
       },
       "7_temporal_reasoning": {
-        "mean_ms": 32.51,
-        "p50_ms": 32.51,
-        "p95_ms": 35.07,
-        "max_ms": 37.2
+        "mean_ms": 30.14,
+        "p50_ms": 30.38,
+        "p95_ms": 32.47,
+        "max_ms": 32.49
       },
       "8_confidence_evaluation": {
         "mean_ms": 0.01,
         "p50_ms": 0.01,
-        "p95_ms": 0.02,
-        "max_ms": 0.04
+        "p95_ms": 0.01,
+        "max_ms": 0.01
       }
     },
     "aggregate_failure_summary": {
@@ -177,16 +177,19 @@
   },
   "mode_b_live_benchmark": {
     "mode": "Mode B (Live Gameplay Benchmark)",
-    "status": "SKIPPED",
-    "message": "Roblox window is not currently open or active on display."
+    "status": "COMPLETED",
+    "frames_measured": 5,
+    "target_window": "Roblox (877x930)",
+    "p50_latency_ms": 531.48,
+    "p95_latency_ms": 682.85
   },
   "synthetic_images": {
     "total_evaluations": 210,
     "valid_cards_sampled": 30,
-    "top1_accuracy_percent": 100.0,
+    "top1_accuracy_percent": 99.52,
     "top2_accuracy_percent": 100.0,
-    "avg_latency_ms": 27.82,
-    "p95_latency_ms": 31.77,
+    "avg_latency_ms": 23.48,
+    "p95_latency_ms": 26.12,
     "per_distortion_breakdown": {
       "gaussian_jitter": 100.0,
       "box_jitter": 100.0,
@@ -194,7 +197,7 @@
       "downsampling": 100.0,
       "compression_artifacts": 100.0,
       "contrast_brightness_shift": 100.0,
-      "compound_noise": 100.0
+      "compound_noise": 96.67
     }
   },
   "real_roblox_blur_images": {
@@ -213,10 +216,10 @@
     "note": "Evaluates confidence calibration when true card is absent from candidate pool."
   },
   "summary": {
-    "synthetic_top1_percent": 100.0,
+    "synthetic_top1_percent": 99.52,
     "replay_top1_percent": 90.0,
-    "e2e_pipeline_step_p50_ms": 93.34,
-    "e2e_pipeline_step_p95_ms": 151.84,
+    "e2e_pipeline_step_p50_ms": 83.06,
+    "e2e_pipeline_step_p95_ms": 200.32,
     "avg_temporal_agreement": 1.0,
     "real_samples_count": 3,
     "disclaimer": "Metrics are measured on actual QuizPipeline.step() execution with no data leakage."

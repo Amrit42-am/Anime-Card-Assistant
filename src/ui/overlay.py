@@ -28,7 +28,7 @@ logger = logging.getLogger("overlay_ui")
 class FloatingOverlay(QWidget):
     """Floating transparent desktop assistant panel."""
 
-    def __init__(self, pipeline: QuizPipeline, is_offline: Optional[bool] = None, parent=None):
+    def __init__(self, pipeline: QuizPipeline, is_offline: Optional[bool] = None, start_worker: bool = True, parent=None):
         super().__init__(parent)
         self.pipeline = pipeline
         # Strictly verify offline status against actual pipeline/model_manager state
@@ -44,7 +44,8 @@ class FloatingOverlay(QWidget):
         self.init_window_flags()
         self.init_ui()
         self.position_on_screen()
-        self.init_worker()
+        if start_worker:
+            self.init_worker()
 
     def init_window_flags(self):
         # Frameless, Always on Top, floating desktop window without stealing focus
@@ -57,7 +58,23 @@ class FloatingOverlay(QWidget):
         )
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        # Keep tool window visible when clicking other apps (Roblox, VS Code, Finder)
+        self.setAttribute(Qt.WA_MacAlwaysShowToolWindow, True)
         self.setFixedWidth(380)
+
+        # Native macOS AppKit Full-Screen auxiliary space support
+        try:
+            from AppKit import NSWindowCollectionBehaviorFullScreenAuxiliary
+            import objc
+            ptr = int(self.winId())
+            nsview = objc.objc_object(c_void_p=ptr)
+            nswin = nsview.window()
+            if nswin:
+                behavior = nswin.collectionBehavior()
+                nswin.setCollectionBehavior_(behavior | NSWindowCollectionBehaviorFullScreenAuxiliary)
+                logger.debug("Configured NSWindowCollectionBehaviorFullScreenAuxiliary on overlay panel.")
+        except Exception as e:
+            logger.debug("Native AppKit window configuration note: %s", e)
 
     def position_on_screen(self):
         """Positions overlay neatly on the right side of the screen."""
@@ -258,13 +275,15 @@ class FloatingOverlay(QWidget):
 
         # 6. Status Footer
         footer = QHBoxLayout()
-        self.db_label = QLabel(f"DB: {len(self.pipeline.matcher.card_names)} cards")
+        db_count = len(self.pipeline.matcher.card_names) if getattr(self.pipeline, "matcher", None) and hasattr(self.pipeline.matcher, "card_names") else 0
+        self.db_label = QLabel(f"DB: {db_count} cards")
         self.db_label.setStyleSheet("color: #64748b; font-size: 10px;")
         footer.addWidget(self.db_label)
 
         footer.addStretch()
 
-        self.learned_label = QLabel(f"Memory: {self.pipeline.memory.total_samples}")
+        mem_count = self.pipeline.memory.total_samples if getattr(self.pipeline, "memory", None) else 0
+        self.learned_label = QLabel(f"Memory: {mem_count}")
         self.learned_label.setStyleSheet("color: #c084fc; font-size: 10px; font-weight: bold;")
         footer.addWidget(self.learned_label)
 
@@ -294,14 +313,28 @@ class FloatingOverlay(QWidget):
         self.setWindowOpacity(val / 100.0)
 
     def on_worker_status(self, status: str):
-        if status == "PAUSED":
-            self.live_indicator.setText("● PAUSED")
-            self.live_indicator.setStyleSheet("color: #f59e0b; font-weight: bold;")
-        elif status == "MONITORING" or status == "IDLE":
-            self.live_indicator.setText("● LIVE")
-            self.live_indicator.setStyleSheet("color: #4ade80; font-weight: bold;")
+        status_map = {
+            "PAUSED": ("● PAUSED", "#f59e0b", "PAUSED"),
+            "MONITORING": ("● LIVE", "#4ade80", "MONITORING ROBLOX"),
+            "SEARCHING": ("● LIVE", "#4ade80", "WAITING FOR QUIZ"),
+            "IDLE": ("● LIVE", "#4ade80", "WAITING FOR QUIZ"),
+            "WAITING FOR QUIZ": ("● LIVE", "#4ade80", "WAITING FOR QUIZ"),
+            "ACTIVE_QUESTION": ("● QUIZ", "#38bdf8", "QUIZ DETECTED"),
+            "WAITING FOR VALID OPTIONS": ("● OCR", "#38bdf8", "WAITING FOR VALID OPTIONS"),
+            "OCR_PROCESSING": ("● OCR", "#38bdf8", "READING ANSWER OPTIONS"),
+            "RESULT_REVEALED": ("● RESULT", "#a78bfa", "RESULT VERIFICATION"),
+            "SAMPLE_VERIFICATION": ("● VERIFY", "#a78bfa", "RESULT VERIFICATION"),
+            "AUTO_LEARNED": ("● LEARNED", "#4ade80", "AUTO-LEARNED"),
+        }
+
+        if status in status_map:
+            ind_text, ind_color, state_text = status_map[status]
+            self.live_indicator.setText(ind_text)
+            self.live_indicator.setStyleSheet(f"color: {ind_color}; font-weight: bold;")
+            self.state_label.setText(state_text)
+            self.state_label.setStyleSheet(f"color: {ind_color}; font-weight: bold;")
         elif status == "QUESTION_FOUND" or status == "OCR_PROCESSING":
-            self.state_label.setText("RECOGNIZING CARD...")
+            self.state_label.setText("READING ANSWER OPTIONS")
             self.state_label.setStyleSheet("color: #38bdf8; font-weight: bold;")
 
     def on_worker_fps(self, fps: float):
@@ -358,6 +391,22 @@ class FloatingOverlay(QWidget):
         """Displays prediction when confidence is low or ambiguous."""
         self.last_result = result
         self.auto_learn_banner.setVisible(False)
+
+        # Distinguish WAITING FOR OPTIONS from actual ambiguous matches
+        conf_lvl = getattr(result, "confidence_level", "UNCERTAIN")
+        if "WAITING" in conf_lvl or "OCR" in conf_lvl or result.card_name.startswith("Waiting"):
+            self.state_label.setText(conf_lvl)
+            self.state_label.setStyleSheet("color: #38bdf8; font-weight: bold;")
+            self.card_name_label.setText("WAITING FOR VALID OPTIONS...")
+            self.card_name_label.setStyleSheet("font-size: 15px; font-weight: 700; color: #94a3b8; padding: 4px 0;")
+            self.slot_badge.setVisible(False)
+            self.conf_badge.set_confidence(0.0, conf_lvl)
+            self.source_badge.set_source("ocr_scanning")
+            self.runner_up_label.setText("Resolving 4 answer button options...")
+            self.latency_label.setText(f"Latency: {result.processing_time_ms:.0f} ms")
+            self.update_candidates_display(result)
+            return
+
         self.state_label.setText("UNCERTAIN MATCH")
         self.state_label.setStyleSheet("color: #f59e0b; font-weight: bold;")
 

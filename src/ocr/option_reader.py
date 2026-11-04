@@ -17,6 +17,8 @@ from typing import List, Optional, Tuple, Dict, Any
 import cv2
 import numpy as np
 from rapidfuzz import process, fuzz
+import shutil
+import os
 
 logger = logging.getLogger("option_reader")
 
@@ -28,9 +30,29 @@ except ImportError:
     VISION_AVAILABLE = False
     logger.warning("macOS Vision framework not available. PyObjC Vision required for OCR.")
 
+
+def find_tesseract_executable() -> Optional[str]:
+    """Finds available tesseract binary in PATH or common macOS Homebrew paths."""
+    cmd = shutil.which("tesseract")
+    if cmd:
+        return cmd
+    for p in ("/opt/homebrew/bin/tesseract", "/usr/local/bin/tesseract"):
+        if Path(p).exists() and os.access(p, os.X_OK):
+            return p
+    return None
+
+
+TESSERACT_AVAILABLE = False
+_TESSERACT_INITIALIZED = False
+
 try:
     import pytesseract
-    TESSERACT_AVAILABLE = True
+    _t_cmd = find_tesseract_executable()
+    if _t_cmd:
+        pytesseract.pytesseract.tesseract_cmd = _t_cmd
+        TESSERACT_AVAILABLE = True
+    else:
+        TESSERACT_AVAILABLE = False
 except ImportError:
     TESSERACT_AVAILABLE = False
 
@@ -105,14 +127,21 @@ class OptionReader:
 
     def extract_text_fallback(self, image: np.ndarray) -> List[Tuple[str, float, float]]:
         """Fallback OCR using pytesseract when Vision fails.
-        Returns a list of (text, confidence, dummy_y) where confidence is the average
-        confidence reported by pytesseract (scaled 0-1). The y coordinate is set to 0.0
-        because we cannot obtain it from pytesseract.
+        Only invokes pytesseract when the executable is verified to exist.
         """
-        if not TESSERACT_AVAILABLE:
+        global _TESSERACT_INITIALIZED
+        if not _TESSERACT_INITIALIZED:
+            _TESSERACT_INITIALIZED = True
+            if not TESSERACT_AVAILABLE:
+                logger.info(
+                    "Tesseract binary not detected in PATH or Homebrew (/opt/homebrew/bin/tesseract, /usr/local/bin/tesseract). "
+                    "Native Apple Vision will serve as primary OCR engine. "
+                    "To enable optional Tesseract fallback: brew install tesseract"
+                )
+
+        if not TESSERACT_AVAILABLE or image is None or image.size == 0:
             return []
-        if image is None or image.size == 0:
-            return []
+
         # Ensure image is 3-channel RGB for pytesseract
         if image.ndim == 3 and image.shape[2] == 3:
             rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -131,9 +160,14 @@ class OptionReader:
                     texts.append((txt.strip(), confidence, 0.0))
             return texts
         except Exception as e:
-            logger.error("pytesseract OCR failed: %s", e)
+            logger.debug("pytesseract fallback notice: %s", e)
             return []
-    def extract_text_vision(self, image: np.ndarray) -> List[Tuple[str, float, float]]:
+
+    def extract_text_vision(
+        self,
+        image: np.ndarray,
+        recognition_level: Optional[int] = None
+    ) -> List[Tuple[str, float, float]]:
         """
         Invokes Apple Vision framework on in-memory image.
         Returns list of (recognized_text, confidence, y_coord_bottom).
@@ -151,7 +185,8 @@ class OptionReader:
         nsdata = NSData.dataWithBytes_length_(data_bytes, len(data_bytes))
 
         request = Vision.VNRecognizeTextRequest.alloc().init()
-        request.setRecognitionLevel_(Vision.VNRequestTextRecognitionLevelFast)
+        level = recognition_level if recognition_level is not None else Vision.VNRequestTextRecognitionLevelFast
+        request.setRecognitionLevel_(level)
         request.setUsesLanguageCorrection_(True)
 
         handler = Vision.VNImageRequestHandler.alloc().initWithData_options_(nsdata, None)
@@ -223,9 +258,14 @@ class OptionReader:
                 if use_retry
                 else self.preprocess_button_image(btn)
             )
-            vision_results = self.extract_text_vision(preprocessed)
+            level = Vision.VNRequestTextRecognitionLevelAccurate if (VISION_AVAILABLE and use_retry) else None
+            vision_results = self.extract_text_vision(preprocessed, recognition_level=level)
 
-            # Fallback to pytesseract when Vision yields no results or low confidence
+            # If enhanced preprocessed image produced no text, try directly on raw button crop
+            if not vision_results and btn is not None and btn.size > 0:
+                vision_results = self.extract_text_vision(btn, recognition_level=level)
+
+            # Fallback to pytesseract when Vision yields no results and tesseract executable exists
             if not vision_results:
                 vision_results = self.extract_text_fallback(preprocessed)
 

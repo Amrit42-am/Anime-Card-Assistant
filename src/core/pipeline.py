@@ -213,15 +213,24 @@ class QuizPipeline:
             )
 
             self.last_result = result
-            self.state = "ANSWER_READY" if result.status == "matched" else "UNCERTAIN"
+            has_four_valid = (
+                len(self.current_candidates) == 4 and
+                all(c.card_id is not None for c in self.current_candidates) and
+                len(set(c.card_id for c in self.current_candidates)) == 4
+            )
+            if not has_four_valid:
+                self.state = "WAITING FOR VALID OPTIONS"
+            else:
+                self.state = "ANSWER_READY" if result.status == "matched" else "UNCERTAIN"
+
             logger.info("Pipeline live prediction: %s (Slot: %s, Confidence: %.2f from %s) in %.1f ms [%s]",
                         result.card_name, result.button_slot, result.confidence, result.matched_from, result.processing_time_ms, result.prediction_stage)
 
             # Mark predicted in context analyzer
             self.context_analyzer.mark_predicted(result.card_name, result.button_slot)
 
-            # Register with adaptive learning for upcoming result pairing
-            if self.adaptive_learning and self.matcher:
+            # Register with adaptive learning for upcoming result pairing ONLY when all 4 options are resolved
+            if has_four_valid and self.adaptive_learning and self.matcher:
                 opt_ids = [self.matcher.find_card_index(name) for name in result.candidates]
                 opt_cids = [int(self.matcher.card_ids[idx]) if idx is not None else None for idx in opt_ids]
 
@@ -250,12 +259,28 @@ class QuizPipeline:
                 if p_frame.ocr_candidates and p_frame.ocr_candidates != self.current_candidates:
                     logger.info("Pipeline: PerceptionEngine signaled %s candidates; updating pipeline candidates.", p_frame.ocr_source.value)
                     self.current_candidates = list(p_frame.ocr_candidates)
-                    # Safely update pending question candidate names and IDs in adaptive_learning without touching blurred image
-                    if self.adaptive_learning and self.matcher:
+                    has_now_four = (
+                        len(self.current_candidates) == 4 and
+                        all(c.card_id is not None for c in self.current_candidates) and
+                        len(set(c.card_id for c in self.current_candidates)) == 4
+                    )
+                    # Safely register or update pending question candidate names and IDs in adaptive_learning
+                    if has_now_four and self.adaptive_learning and self.matcher:
                         opt_names = [c.canonical_name for c in self.current_candidates if c.canonical_name]
                         opt_ids = [self.matcher.find_card_index(name) for name in opt_names]
                         opt_cids = [int(self.matcher.card_ids[idx]) if idx is not None else None for idx in opt_ids]
-                        self.adaptive_learning.update_pending_candidates(opt_names, opt_cids)
+                        if self.adaptive_learning.pending_question is None:
+                            self.adaptive_learning.register_question(
+                                card_frame=p_frame.card_frame if (p_frame.card_frame is not None and p_frame.card_frame.size > 0) else np.zeros((10, 10, 3), dtype=np.uint8),
+                                option_names=opt_names,
+                                option_ids=opt_cids,
+                                predicted_name=self.last_result.card_name if self.last_result else "",
+                                predicted_id=self.last_result.card_id if self.last_result else None,
+                                card_hash=p_frame.card_hash,
+                                timestamp=event.timestamp
+                            )
+                        else:
+                            self.adaptive_learning.update_pending_candidates(opt_names, opt_cids)
             elif p_frame.ocr_source == OCRSource.INVALID:
                 logger.warning("Pipeline: PerceptionEngine signaled INVALID OCR on grid change; invalidating stale candidates.")
                 self.current_candidates = []

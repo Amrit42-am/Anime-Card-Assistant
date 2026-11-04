@@ -174,27 +174,42 @@ class CandidateReasoner:
             if best_fuzzy >= 80.0:
                 assigned_slot = best_slot
 
-        # Slot assignment verification:
-        # If the predicted card is not present in OCR candidates, do NOT assign default top-left!
-        # Return uncertain status if slot cannot be validated.
-        if assigned_slot is None:
+        # Slot assignment & candidate restriction verification:
+        # If fewer than 4 distinct candidates resolved, never produce a confirmed answer or slot!
+        if not is_constrained:
+            assigned_slot = None
             is_confident = False
             status = "uncertain"
+            confidence_level = "WAITING FOR VALID OPTIONS" if not button_frames else "OCR RECOVERY"
+            explanation = f"Waiting for valid options: only {len(unique_ids)}/4 distinct options resolved by OCR"
+            display_card_name = "Waiting for valid options..."
+            calibrated_conf = 0.0
+        elif assigned_slot is None:
+            is_confident = False
+            status = "uncertain"
+            confidence_level = "UNCERTAIN"
+            explanation = f"Matched card '{top_name}' could not be assigned to a button slot"
+            display_card_name = top_name
+            calibrated_conf = verdict.calibrated_confidence
         else:
             is_confident = verdict.is_confident
             status = "matched" if is_confident else "uncertain"
+            confidence_level = verdict.confidence_level if is_confident else "UNCERTAIN"
+            explanation = verdict.explanation
+            display_card_name = top_name
+            calibrated_conf = verdict.calibrated_confidence
 
         return ReasonedAnswer(
-            card_name=top_name,
-            card_id=top_id,
+            card_name=display_card_name,
+            card_id=top_id if is_constrained else None,
             slot_index=assigned_slot,
-            confidence=verdict.calibrated_confidence,
-            confidence_level=verdict.confidence_level if is_confident else "UNCERTAIN",
-            margin=verdict.margin_of_victory,
+            confidence=calibrated_conf,
+            confidence_level=confidence_level,
+            margin=verdict.margin_of_victory if is_constrained else 0.0,
             is_confident=is_confident,
-            runner_up_name=runner_up_name,
-            runner_up_score=runner_up_score,
-            source=match_source,
+            runner_up_name=runner_up_name if is_constrained else None,
+            runner_up_score=runner_up_score if is_constrained else 0.0,
+            source=match_source if is_constrained else "waiting_options",
             status=status,
             raw_match=match_res.to_dict() if hasattr(match_res, "to_dict") else dict(match_res),
             query_embedding=query_embedding.copy(),

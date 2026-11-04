@@ -9,6 +9,7 @@ Tests for OptionReader:
 """
 
 import cv2
+from pathlib import Path
 import numpy as np
 import pytest
 from src.ocr.option_reader import OptionReader
@@ -70,3 +71,32 @@ def test_empty_results(reader):
     results = reader.read_options_from_buttons([blank])
     assert len(results) == 1
     assert results[0].is_valid is False
+
+
+def test_option_reader_tesseract_missing_no_error_spam(monkeypatch, reader, caplog):
+    """Verify that when Tesseract binary is not present, extract_text_fallback returns [] cleanly without spamming errors."""
+    import logging
+    import src.ocr.option_reader as opt_mod
+    monkeypatch.setattr(opt_mod, "TESSERACT_AVAILABLE", False)
+
+    blank = np.zeros((60, 200, 3), dtype=np.uint8)
+    with caplog.at_level(logging.ERROR):
+        res = reader.extract_text_fallback(blank)
+    assert res == []
+    # No error logs emitted
+    error_logs = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(error_logs) == 0
+
+
+def test_diagnose_quiz_crops(tmp_path):
+    """Verify that ScreenCapture.diagnose_quiz_crops produces annotated screenshots and slot crops."""
+    from src.capture.screen_capture import ScreenCapture
+    capture = ScreenCapture()
+    diag_dir = tmp_path / "diag"
+    rep = capture.diagnose_quiz_crops(output_dir=diag_dir)
+
+    assert "game_dimensions" in rep
+    assert (diag_dir / "debug_screen_crops.png").exists()
+    assert len(rep["crop_paths"]) == 4
+    for cp in rep["crop_paths"]:
+        assert Path(cp).exists()

@@ -9,6 +9,11 @@
 
 set -e
 
+# Enforce strict offline execution globally in launch environment
+export REQUIRE_OFFLINE=1
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 

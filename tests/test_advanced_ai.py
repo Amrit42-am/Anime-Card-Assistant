@@ -425,3 +425,73 @@ def test_ocr_invalidation_and_recovery_flow(tmp_path):
     assert adaptive.pending_question.option_ids == [1, 2, 3, 4]
 
 
+def test_insufficient_candidates_never_produces_confirmed_answer():
+    """Verify CandidateReasoner with < 4 candidates never outputs a confirmed answer or slot."""
+    reader = OptionReader()
+    matcher = ImageMatcher()
+    encoder = ModelManager.get_instance().get_encoder()
+
+    reasoner = CandidateReasoner(
+        image_matcher=matcher,
+        image_encoder=encoder,
+        option_reader=reader
+    )
+    dummy_card = np.ones((120, 120, 3), dtype=np.uint8) * 100
+
+    # Test candidate counts: 0, 1, 2, 3
+    test_counts = [
+        [],
+        [CandidateOption(slot_index=0, raw_text="Shadow Duelist", canonical_name="Shadow Duelist", card_id=200, is_valid=True)],
+        [
+            CandidateOption(slot_index=0, raw_text="Shadow Duelist", canonical_name="Shadow Duelist", card_id=200, is_valid=True),
+            CandidateOption(slot_index=1, raw_text="Green Bomber", canonical_name="Green Bomber", card_id=137, is_valid=True),
+        ],
+        [
+            CandidateOption(slot_index=0, raw_text="Shadow Duelist", canonical_name="Shadow Duelist", card_id=200, is_valid=True),
+            CandidateOption(slot_index=1, raw_text="Green Bomber", canonical_name="Green Bomber", card_id=137, is_valid=True),
+            CandidateOption(slot_index=2, raw_text="Harmonious Soul", canonical_name="Harmonious Soul", card_id=139, is_valid=True),
+        ],
+    ]
+
+    for cands in test_counts:
+        res = reasoner.reason_answer(dummy_card, cands)
+        assert res.slot_index is None
+        assert res.confidence == 0.0
+        assert res.status == "uncertain"
+        assert res.is_confident is False
+        assert res.confidence_level in ["WAITING FOR VALID OPTIONS", "OCR RECOVERY"]
+        assert res.card_name == "Waiting for valid options..."
+
+
+def test_overlay_window_flags_and_visibility():
+    """Verify FloatingOverlay window flags prevent focus stealing and remain visible on focus switch."""
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtCore import Qt
+    from src.ui.overlay import FloatingOverlay
+    from src.core.pipeline import QuizPipeline
+
+    app = QApplication.instance() or QApplication([])
+
+    # Mock pipeline for overlay
+    pipeline = QuizPipeline(auto_init_models=False)
+    overlay = FloatingOverlay(pipeline=pipeline, is_offline=True, start_worker=False)
+
+    flags = overlay.windowFlags()
+    # Check tool and focus prevention flags
+    assert bool(flags & Qt.Tool)
+    assert bool(flags & Qt.WindowStaysOnTopHint)
+    assert bool(flags & Qt.WindowDoesNotAcceptFocus)
+    assert bool(flags & Qt.FramelessWindowHint)
+
+    # Check macOS tool window and no-activate attributes
+    assert overlay.testAttribute(Qt.WA_MacAlwaysShowToolWindow) is True
+    assert overlay.testAttribute(Qt.WA_ShowWithoutActivating) is True
+    assert overlay.testAttribute(Qt.WA_TranslucentBackground) is True
+
+    # Check status display mapping for waiting state
+    overlay.on_worker_status("WAITING FOR VALID OPTIONS")
+    assert "WAITING FOR VALID OPTIONS" in overlay.state_label.text()
+    overlay.close()
+
+
+

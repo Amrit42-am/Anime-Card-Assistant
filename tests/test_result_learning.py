@@ -418,3 +418,43 @@ def test_state_machine_transitions_all_phases():
     e5 = detector.process_frame_bundle(active_bundle)
     assert e5.question_detected is True
     assert detector.current_state == "ACTIVE_QUESTION"
+
+
+def test_lobby_and_world_screens_do_not_trigger_quiz():
+    """Verify that ordinary Roblox screens (lobby, world character, menu) never trigger ACTIVE_QUESTION."""
+    detector = QuestionDetector()
+
+    # 1. Lobby screen: smooth ground texture and sky
+    ground = np.ones((80, 200, 3), dtype=np.uint8) * 90
+    ground_buttons = [np.ones((40, 90, 3), dtype=np.uint8) * 90 for _ in range(4)]
+    lobby_bundle = {
+        "card_frame": np.ones((120, 120, 3), dtype=np.uint8) * 110,
+        "options_frame": ground,
+        "button_frames": ground_buttons
+    }
+    e_lobby = detector.process_frame_bundle(lobby_bundle)
+    assert e_lobby.question_detected is False
+    assert detector.current_state == "IDLE"
+
+    # 2. Character in game world: random gradient without button borders/text
+    char_card = np.zeros((120, 120, 3), dtype=np.uint8)
+    cv2.circle(char_card, (60, 60), 40, (180, 120, 80), -1)
+    world_buttons = [np.random.normal(100, 2, (40, 90, 3)).astype(np.uint8) for _ in range(4)]
+    char_bundle = {
+        "card_frame": char_card,
+        "options_frame": np.vstack([np.hstack(world_buttons[:2]), np.hstack(world_buttons[2:])]),
+        "button_frames": world_buttons
+    }
+    e_char = detector.process_frame_bundle(char_bundle)
+    assert e_char.question_detected is False
+    assert detector.current_state == "IDLE"
+
+    # 3. Solid menu screen
+    menu_bundle = {
+        "card_frame": np.ones((120, 120, 3), dtype=np.uint8) * 30,
+        "options_frame": np.ones((80, 200, 3), dtype=np.uint8) * 30,
+        "button_frames": [np.ones((40, 90, 3), dtype=np.uint8) * 30 for _ in range(4)]
+    }
+    e_menu = detector.process_frame_bundle(menu_bundle)
+    assert e_menu.question_detected is False
+    assert detector.current_state == "IDLE"

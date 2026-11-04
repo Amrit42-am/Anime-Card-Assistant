@@ -7,6 +7,7 @@ and crops game, card, and option button regions efficiently.
 """
 
 import logging
+from pathlib import Path
 from typing import Dict, Any, Optional, List
 import cv2
 import mss
@@ -169,6 +170,97 @@ class ScreenCapture:
             "source_window_title": getattr(resolved, "source_window_title", ""),
             "resolved_regions": resolved,
         }
+
+    def diagnose_quiz_crops(self, output_dir: Path = Path("data/diagnostics")) -> Dict[str, Any]:
+        """
+        Diagnostic mode: Captures live game window, draws color-coded rectangles
+        for Game Window, Card Artwork, Options Grid, and all 4 Button Slots (TL, TR, BL, BR),
+        saves individual button crops and runs Apple Vision OCR on each.
+        Outputs diagnostics to output_dir and prints summary report.
+        """
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        bundle = self.capture_quiz_bundle()
+        game_frame = bundle["game_frame"]
+        card_frame = bundle["card_frame"]
+        options_frame = bundle["options_frame"]
+        button_frames = bundle.get("button_frames", [])
+        resolved = bundle.get("resolved_regions")
+
+        annotated = game_frame.copy()
+        gh, gw = game_frame.shape[:2]
+        cfg = self.calibration
+
+        # Draw Card Artwork Box (Magenta)
+        card_rel = cfg.card_relative
+        cx1, cy1 = int(card_rel.rx * gw), int(card_rel.ry * gh)
+        cx2, cy2 = int((card_rel.rx + card_rel.rw) * gw), int((card_rel.ry + card_rel.rh) * gh)
+        cv2.rectangle(annotated, (cx1, cy1), (cx2, cy2), (255, 0, 255), 2)
+        cv2.putText(annotated, "Card Artwork", (cx1, max(18, cy1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
+
+        # Draw Options Area (Green)
+        opts_rel = cfg.options_relative
+        ox1, oy1 = int(opts_rel.rx * gw), int(opts_rel.ry * gh)
+        ox2, oy2 = int((opts_rel.rx + opts_rel.rw) * gw), int((opts_rel.ry + opts_rel.rh) * gh)
+        cv2.rectangle(annotated, (ox1, oy1), (ox2, oy2), (0, 255, 0), 2)
+        cv2.putText(annotated, "Options Area", (ox1, max(18, oy1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+        # Draw 4 Buttons inside options area (Yellow)
+        ow = ox2 - ox1
+        oh = oy2 - oy1
+        half_w = ow // 2
+        half_h = oh // 2
+        pad_x, pad_y = 4, 4
+
+        slots_info = [
+            (0, "TL", ox1 + pad_x, oy1 + pad_y, ox1 + half_w - pad_x, oy1 + half_h - pad_y),
+            (1, "TR", ox1 + half_w + pad_x, oy1 + pad_y, ox1 + ow - pad_x, oy1 + half_h - pad_y),
+            (2, "BL", ox1 + pad_x, oy1 + half_h + pad_y, ox1 + half_w - pad_x, oy1 + oh - pad_y),
+            (3, "BR", ox1 + half_w + pad_x, oy1 + half_h + pad_y, ox1 + ow - pad_x, oy1 + oh - pad_y),
+        ]
+
+        for s_idx, s_label, bx1, by1, bx2, by2 in slots_info:
+            cv2.rectangle(annotated, (bx1, by1), (bx2, by2), (0, 255, 255), 2)
+            cv2.putText(annotated, f"Slot {s_idx} [{s_label}]", (bx1 + 4, by1 + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
+
+        # Save annotated image
+        annotated_path = output_dir / "debug_screen_crops.png"
+        cv2.imwrite(str(annotated_path), annotated)
+
+        # Save individual button crops
+        crop_paths = []
+        for i, b in enumerate(button_frames):
+            b_path = output_dir / f"button_slot_{i}_{slots_info[i][1]}.png"
+            if b is not None and b.size > 0:
+                cv2.imwrite(str(b_path), b)
+            crop_paths.append(b_path)
+
+        # Run OCR on the crops
+        from src.ocr.option_reader import OptionReader
+        reader = OptionReader()
+        candidates = reader.read_options_from_buttons(button_frames)
+
+        report = {
+            "game_dimensions": f"{gw}x{gh}",
+            "is_auto_tracked": bundle.get("is_auto_tracked", False),
+            "window_title": bundle.get("source_window_title", ""),
+            "annotated_screenshot": str(annotated_path),
+            "crop_paths": [str(p) for p in crop_paths],
+            "candidates": [
+                {
+                    "slot": c.slot_index,
+                    "raw_text": c.raw_text,
+                    "canonical_name": c.canonical_name,
+                    "card_id": c.card_id,
+                    "is_valid": c.is_valid,
+                    "confidence": c.ocr_confidence,
+                    "fuzzy_score": c.fuzzy_score
+                }
+                for c in candidates
+            ]
+        }
+        return report
 
     def close(self):
         self._sct.close()

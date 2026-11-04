@@ -100,32 +100,25 @@ class DINOv2Encoder(BaseImageEncoder):
         target_weights = Path(weights_path) if weights_path else self.DEFAULT_LOCAL_WEIGHTS
         self.weights_path = target_weights
 
-        if target_weights.exists():
-            logger.info("Loading DINOv2 architecture '%s' and local weights from %s...", model_name, target_weights)
-            self.model = timm.create_model(
-                model_name,
-                pretrained=False,
-                num_classes=0,
-                dynamic_img_size=True
-            ).to(self.device)
+        if not target_weights.exists():
+            raise FileNotFoundError(
+                f"Offline execution requirement failed: local model checkpoint not found at '{target_weights}'. "
+                "Normal gameplay requires locally verified safetensors weights. "
+                "Please run one-time preparation first: python scripts/download_models.py or ./prepare.sh"
+            )
 
-            from safetensors.torch import load_file
-            state_dict = load_file(str(target_weights))
-            self.model.load_state_dict(state_dict, strict=True)
-            logger.info("Successfully loaded offline DINOv2 weights from local safetensors checkpoint.")
-        else:
-            if require_offline or os.environ.get("REQUIRE_OFFLINE", "1") == "1":
-                raise FileNotFoundError(
-                    f"Offline execution requirement failed: local model checkpoint not found at {target_weights}. "
-                    "Please run: ./prepare.sh or python scripts/download_models.py"
-                )
-            logger.warning("Local checkpoint %s not found. Loading via timm cache...", target_weights)
-            self.model = timm.create_model(
-                model_name,
-                pretrained=True,
-                num_classes=0,
-                dynamic_img_size=True
-            ).to(self.device)
+        logger.info("Loading DINOv2 architecture '%s' and local weights from %s...", model_name, target_weights)
+        self.model = timm.create_model(
+            model_name,
+            pretrained=False,
+            num_classes=0,
+            dynamic_img_size=True
+        ).to(self.device)
+
+        from safetensors.torch import load_file
+        state_dict = load_file(str(target_weights))
+        self.model.load_state_dict(state_dict, strict=True)
+        logger.info("Successfully loaded offline DINOv2 weights from local safetensors checkpoint.")
 
         self.model.eval()
 

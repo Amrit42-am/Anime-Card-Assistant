@@ -48,11 +48,10 @@ class ModelManager:
         self.models_dir = Path(models_dir)
         self.model_name = model_name
         self.require_offline = require_offline
-        if os.environ.get("REQUIRE_OFFLINE") == "0":
-            self.require_offline = False
         self._device = self._resolve_device()
 
-        # Enforce offline mode in PyTorch / HuggingFace
+        # Enforce strict offline mode in PyTorch / HuggingFace
+        os.environ["REQUIRE_OFFLINE"] = "1"
         os.environ["HF_HUB_OFFLINE"] = "1"
         os.environ["TRANSFORMERS_OFFLINE"] = "1"
         self.verified_weights_path: Optional[Path] = None

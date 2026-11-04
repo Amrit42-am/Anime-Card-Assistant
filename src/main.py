@@ -31,6 +31,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Anime Card Assistant — Roblox Card Clash Recognition System")
     parser.add_argument("--calibrate", action="store_true", help="Launch calibration dialog directly.")
     parser.add_argument("--headless", action="store_true", help="Run monitoring loop in terminal without GUI.")
+    parser.add_argument("--diagnose", "--debug-crops", action="store_true", help="Capture a diagnostic screenshot with crop rectangles and test 4-slot OCR.")
     parser.add_argument("--offline", action="store_true", default=True, help="Enforce strict offline execution (default: strictly offline).")
     parser.add_argument("--model", type=str, default="dinov2", choices=["dinov2", "mobilenet"], help="Visual encoder model.")
     parser.add_argument("--fps", type=float, default=8.0, help="Target screen monitoring FPS.")
@@ -78,6 +79,29 @@ def main():
         logger.warning("Screen Recording permission might not be granted. Requesting access...")
         ScreenCapture.request_permissions()
 
+    # Diagnostic mode
+    if args.diagnose:
+        logger.info("Executing Crop Diagnostic Mode...")
+        capture = ScreenCapture()
+        rep = capture.diagnose_quiz_crops()
+        print("\n" + "=" * 56)
+        print("           QUIZ CROP DIAGNOSTIC REPORT")
+        print("=" * 56)
+        print(f"Game Dimensions: {rep['game_dimensions']} (Auto-tracked: {rep['is_auto_tracked']})")
+        if rep['window_title']:
+            print(f"Target Window:   {rep['window_title']}")
+        print("\n4-Slot OCR Recognition:")
+        for c in rep['candidates']:
+            status_str = "VALID" if c['is_valid'] else "UNRESOLVED"
+            print(f"  Slot {c['slot']}: Raw: '{c['raw_text']}' -> Canonical: '{c['canonical_name']}' (ID: {c['card_id']}, Score: {c['fuzzy_score']:.1f}) [{status_str}]")
+        print(f"\nAnnotated screen saved to: {rep['annotated_screenshot']}")
+        print("Individual button crops saved:")
+        for cp in rep['crop_paths']:
+            print(f"  - {cp}")
+        print("=" * 56 + "\n")
+        capture.close()
+        sys.exit(0)
+
     # Headless mode
     if args.headless:
         logger.info("Starting headless monitoring pipeline (Ctrl+C to quit)...")
@@ -119,20 +143,10 @@ def main():
     # Initialize full pipeline
     pipeline = QuizPipeline(encoder_name=args.model)
 
-    # Launch floating assistant overlay
+    # Launch floating assistant overlay without stealing focus from Roblox
     overlay = FloatingOverlay(pipeline=pipeline, is_offline=pipeline.is_offline_verified)
     overlay.show()
     overlay.raise_()
-    overlay.activateWindow()
-
-    # Bring to foreground on macOS
-    try:
-        from AppKit import NSApplication, NSApplicationActivationPolicyRegular
-        ns_app = NSApplication.sharedApplication()
-        ns_app.setActivationPolicy_(NSApplicationActivationPolicyRegular)
-        ns_app.activateIgnoringOtherApps_(True)
-    except Exception as e:
-        logger.debug("AppKit activation notice: %s", e)
 
     # Allow clean Ctrl+C in terminal to exit Qt app
     signal.signal(signal.SIGINT, signal.SIG_DFL)
