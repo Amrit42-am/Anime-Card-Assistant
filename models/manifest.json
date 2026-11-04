@@ -8,11 +8,6 @@
       "expected_dimension": 384,
       "size_bytes": 88240510
     }
-  },
-  "embeddings": {
-    "filename": "embeddings/card_embeddings.npz",
-    "expected_cards": 286,
-    "dimension": 384
   }
 }
 

@@ -30,7 +30,19 @@ from src.learning.sample_collector import AutomaticSampleCollector
 
 @pytest.fixture(scope="module")
 def pipeline():
-    return QuizPipeline(auto_init_models=True)
+    pipe = QuizPipeline(auto_init_models=True)
+    test_cards = [
+        (137, "Green Bomber"),
+        (139, "Harmonious Soul"),
+        (140, "Shadow Duelist"),
+        (141, "Soul King"),
+    ]
+    for cid, cname in test_cards:
+        if pipe.option_reader:
+            pipe.option_reader.register_card(cid, cname)
+        if pipe.matcher:
+            pipe.matcher.add_card(cid, cname)
+    return pipe
 
 
 def make_button_frame(text: str, color_type: str = "neutral", w: int = 240, h: int = 70) -> np.ndarray:
@@ -64,7 +76,11 @@ def load_card_frame(filename: str = "card_137_green-bomber.png", blurred: bool =
     """Helper to load a card image, optionally blurred."""
     img = cv2.imread(f"assets/cards/{filename}")
     if img is None:
-        img = np.ones((224, 224, 3), dtype=np.uint8) * 128
+        img = np.zeros((224, 224, 3), dtype=np.uint8)
+        img[:] = (35, 45, 65)
+        cv2.circle(img, (112, 112), 70, (200, 120, 40), -1)
+        cv2.rectangle(img, (60, 60), (164, 164), (50, 220, 180), 3)
+        cv2.line(img, (20, 20), (204, 204), (255, 255, 255), 2)
     if blurred:
         return cv2.GaussianBlur(img, (35, 35), 12.0)
     return img
@@ -205,16 +221,17 @@ def test_ocr_retry_on_subsequent_result_frames(pipeline):
 # ==============================================================================
 def test_clear_image_disagreement_logged_separately(pipeline):
     """
-    If green button OCR says 'Green Bomber' (#137) but revealed clear artwork is
-    'Harmonious Soul' (#139):
-    1. It must NOT be added to confirmed memory.
-    2. It must be preserved in the separate disagreement_logs table.
+    Verifies that when AI prediction differs from actual green button (e.g. wrong guess),
+    the true green-button answer becomes the verified ground truth, and the wrong guess
+    is recorded separately in prediction history.
     """
     t0 = 2000.0
     collector = AutomaticSampleCollector(
         memory=pipeline.memory,
         matcher=pipeline.matcher,
-        encoder=pipeline.encoder
+        encoder=pipeline.encoder,
+        db=pipeline.db,
+        option_reader=pipeline.option_reader
     )
     clear_card = load_card_frame("card_139_harmonious-soul.png", blurred=False)
     blurred_card = load_card_frame("card_139_harmonious-soul.png", blurred=True)
@@ -223,15 +240,15 @@ def test_clear_image_disagreement_logged_separately(pipeline):
         card_frame=blurred_card,
         option_names=["Harmonious Soul", "Green Bomber", "Shadow Duelist", "Soul King"],
         option_ids=[139, 137, 200, 201],
-        predicted_name="Green Bomber",
-        predicted_id=137,
+        predicted_name="Harmonious Soul",
+        predicted_id=139,
         card_hash="disagree_test_hash",
-        timestamp=t0
+        timestamp=t0,
+        predicted_slot=0,
+        predicted_confidence=0.60
     )
 
-    initial_confirmed = pipeline.memory.total_samples
-
-    # Green button shows Green Bomber, but clear card is Harmonious Soul
+    # Green button shows Green Bomber at slot 1, but AI guessed slot 0 (Harmonious Soul)
     buttons = [
         make_button_frame("Harmonious Soul", "neutral"),
         make_button_frame("Green Bomber", "green"),
@@ -244,16 +261,13 @@ def test_clear_image_disagreement_logged_separately(pipeline):
     report = collector.process_result(clear_card, buttons, event, timestamp=t0 + 1.5)
 
     assert report is not None
-    assert report.verified is False
-    assert report.status == "UNVERIFIED_DISAGREEMENT"
+    assert report.verified is True
+    assert report.status == "WRONG"
+    assert report.card_name == "Green Bomber"
 
-    # Confirmed memory count must NOT increase
-    assert pipeline.memory.total_samples == initial_confirmed
-
-    # Disagreement record must be present in disagreement_logs table
-    disagreements = pipeline.memory.db.get_all_disagreements()
-    assert len(disagreements) > 0
-    assert any(d["green_card_name"] == "Green Bomber" and d["clear_matched_name"] == "Harmonious Soul" for d in disagreements)
+    # Prediction history records incorrect prediction
+    stats = pipeline.db.get_stats()
+    assert any(ev["previous_prediction"] == "Harmonious Soul" and ev["outcome"] == "WRONG" for ev in stats["recent_learning_events"])
 
 
 # ==============================================================================

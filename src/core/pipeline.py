@@ -28,7 +28,8 @@ from src.recognition.image_matcher import ImageMatcher
 from src.memory.blur_memory import BlurMemorySystem
 from src.core.decision_engine import AnswerDecisionEngine, AnswerResult
 from src.learning.result_detector import ResultDetector, ResultDetectionEvent
-from src.learning.sample_collector import CollectionReport
+from src.learning.sample_collector import CollectionReport, AutomaticSampleCollector
+from src.memory.self_learning_db import SelfLearningDatabase
 from src.ai.model_manager import ModelManager
 from src.ai.perception_engine import PerceptionEngine, PerceptionFrame, OCRSource
 from src.ai.context_analyzer import ContextAnalyzer
@@ -68,7 +69,8 @@ class QuizPipeline:
             calibration=self.calibration,
             game_locator=self.game_locator
         )
-        self.option_reader = OptionReader()
+        self.db = SelfLearningDatabase()
+        self.option_reader = OptionReader(db=self.db)
         self.perception_engine = PerceptionEngine(
             screen_capture=self.capture,
             game_locator=self.game_locator,
@@ -90,7 +92,7 @@ class QuizPipeline:
                 )
             self.encoder: BaseImageEncoder = self.model_manager.get_encoder()
 
-            self.matcher = ImageMatcher()
+            self.matcher = ImageMatcher(db=self.db)
             self.memory = BlurMemorySystem(encoder=self.encoder)
 
             self.candidate_reasoner = CandidateReasoner(
@@ -112,7 +114,14 @@ class QuizPipeline:
             self.adaptive_learning = AdaptiveLearning(
                 memory=self.memory,
                 matcher=self.matcher,
-                encoder=self.encoder
+                encoder=self.encoder,
+                sample_collector=AutomaticSampleCollector(
+                    memory=self.memory,
+                    matcher=self.matcher,
+                    encoder=self.encoder,
+                    db=self.db,
+                    option_reader=self.option_reader
+                )
             )
             self.sample_collector = self.adaptive_learning.collector
         else:
@@ -214,29 +223,36 @@ class QuizPipeline:
             )
 
             self.last_result = result
-            has_four_valid = (
+            has_four_readable = (
                 len(self.current_candidates) == 4 and
+                all(c.is_valid and (c.canonical_name or c.raw_text) for c in self.current_candidates)
+            )
+            has_four_known = (
+                has_four_readable and
                 all(c.card_id is not None for c in self.current_candidates) and
                 len(set(c.card_id for c in self.current_candidates)) == 4
             )
-            if not has_four_valid:
-                self.state = "WAITING FOR VALID OPTIONS"
+
+            if has_four_known and result.status == "matched":
+                self.state = "ANSWER_READY"
+            elif has_four_readable or (result.candidates and len([c for c in result.candidates if c]) == 4):
+                self.state = "PROVISIONAL_GUESS" if getattr(result, "is_constrained", False) else "UNCERTAIN"
             else:
-                self.state = "ANSWER_READY" if result.status == "matched" else "UNCERTAIN"
+                self.state = "WAITING FOR VALID OPTIONS"
 
             logger.info("Pipeline live prediction: %s (Slot: %s, Confidence: %.2f from %s) in %.1f ms [%s]",
                         result.card_name, result.button_slot, result.confidence, result.matched_from, result.processing_time_ms, result.prediction_stage)
 
-            # Mark predicted in context analyzer ONLY when 4 valid options exist and result was matched
-            if has_four_valid and result.status == "matched" and result.button_slot is not None:
-                self.context_analyzer.mark_predicted(result.card_name, result.button_slot)
+            # Mark predicted in context analyzer
+            if (has_four_known or has_four_readable) and result.card_name:
+                self.context_analyzer.mark_predicted(result.card_name, result.button_slot if result.button_slot is not None else 0)
             else:
                 self.context_analyzer.mark_ocr_status(is_valid=False)
 
-            # Register with adaptive learning for upcoming result pairing ONLY when all 4 options are resolved
-            if has_four_valid and self.adaptive_learning and self.matcher:
-                opt_ids = [self.matcher.find_card_index(name) for name in result.candidates]
-                opt_cids = [int(self.matcher.card_ids[idx]) if idx is not None else None for idx in opt_ids]
+            # Register with adaptive learning for upcoming result pairing whenever 4 options are extracted
+            if (has_four_readable or len(result.candidates) == 4) and self.adaptive_learning:
+                opt_ids = [self.matcher.find_card_index(name) if self.matcher else None for name in result.candidates]
+                opt_cids = [int(self.matcher.card_ids[idx]) if (idx is not None and self.matcher and idx < len(self.matcher.card_ids)) else None for idx in opt_ids]
 
                 self.adaptive_learning.register_question(
                     card_frame=card_frame,
@@ -245,7 +261,9 @@ class QuizPipeline:
                     predicted_name=result.card_name,
                     predicted_id=result.card_id,
                     card_hash=event.card_hash,
-                    timestamp=event.timestamp
+                    timestamp=event.timestamp,
+                    predicted_slot=result.button_slot,
+                    predicted_confidence=result.confidence
                 )
 
             answer_res = result
@@ -265,14 +283,13 @@ class QuizPipeline:
                     self.current_candidates = list(p_frame.ocr_candidates)
                     has_now_four = (
                         len(self.current_candidates) == 4 and
-                        all(c.card_id is not None for c in self.current_candidates) and
-                        len(set(c.card_id for c in self.current_candidates)) == 4
+                        all(c.is_valid and (c.canonical_name or c.raw_text) for c in self.current_candidates)
                     )
                     # Safely register or update pending question candidate names and IDs in adaptive_learning
-                    if has_now_four and self.adaptive_learning and self.matcher:
-                        opt_names = [c.canonical_name for c in self.current_candidates if c.canonical_name]
-                        opt_ids = [self.matcher.find_card_index(name) for name in opt_names]
-                        opt_cids = [int(self.matcher.card_ids[idx]) if idx is not None else None for idx in opt_ids]
+                    if has_now_four and self.adaptive_learning:
+                        opt_names = [c.canonical_name if c.canonical_name else c.raw_text for c in self.current_candidates]
+                        opt_ids = [self.matcher.find_card_index(name) if self.matcher else None for name in opt_names]
+                        opt_cids = [int(self.matcher.card_ids[idx]) if (idx is not None and self.matcher and idx < len(self.matcher.card_ids)) else None for idx in opt_ids]
                         if self.adaptive_learning.pending_question is None:
                             self.adaptive_learning.register_question(
                                 card_frame=p_frame.card_frame if (p_frame.card_frame is not None and p_frame.card_frame.size > 0) else np.zeros((10, 10, 3), dtype=np.uint8),
@@ -281,7 +298,9 @@ class QuizPipeline:
                                 predicted_name=self.last_result.card_name if self.last_result else "",
                                 predicted_id=self.last_result.card_id if self.last_result else None,
                                 card_hash=p_frame.card_hash,
-                                timestamp=event.timestamp
+                                timestamp=event.timestamp,
+                                predicted_slot=self.last_result.button_slot if self.last_result else None,
+                                predicted_confidence=self.last_result.confidence if self.last_result else 0.0
                             )
                         else:
                             self.adaptive_learning.update_pending_candidates(opt_names, opt_cids)

@@ -13,6 +13,7 @@ import logging
 from typing import List, Optional, Tuple
 import cv2
 import numpy as np
+from rapidfuzz import process, fuzz
 
 from src.ocr.option_reader import OptionReader
 
@@ -157,28 +158,54 @@ def get_correct_option(
         logger.debug("Green button OCR below confidence threshold (conf=%.2f, text='%s')", avg_conf, raw_text)
         return None
 
-    # 4. Strict canonical-name resolution
-    canonical_name, card_id, fuzzy_score = option_reader.resolve_canonical_name(raw_text)
-    is_verified = (card_id is not None) and (fuzzy_score >= min_fuzzy_score)
+    # Require at least 3 alphanumeric characters to avoid noise/symbols (e.g. '??? ~~~')
+    alnum_chars = [c for c in raw_text if c.isalnum()]
+    if len(alnum_chars) < 3:
+        logger.debug("Green button text '%s' has insufficient alphanumeric characters", raw_text)
+        return None
 
-    if not is_verified:
-        logger.debug("Green button text '%s' resolved to '%s' (fuzzy=%.1f) but below strict threshold %.1f",
-                     raw_text, canonical_name, fuzzy_score, min_fuzzy_score)
+    # 4. Strict canonical-name or slot candidate resolution
+    canonical_name, card_id, fuzzy_score = option_reader.resolve_canonical_name(raw_text)
+    clean_text = option_reader.clean_text(raw_text)
+
+    if card_id is not None and fuzzy_score >= min_fuzzy_score:
+        verified_name = canonical_name
+    elif candidate_names and best_slot < len(candidate_names) and candidate_names[best_slot]:
+        cand_at_slot = candidate_names[best_slot].strip()
+        slot_fuzzy = fuzz.token_sort_ratio(clean_text.lower(), cand_at_slot.lower())
+        if slot_fuzzy >= 55.0 or len(clean_text) >= 3:
+            verified_name = cand_at_slot
+            fuzzy_score = float(slot_fuzzy)
+        else:
+            verified_name = clean_text
+    elif len(clean_text) >= 3:
+        verified_name = clean_text
+    else:
+        logger.debug("Green button text '%s' below strict length threshold", raw_text)
         return None
 
     # 5. Verify the detected card belongs to the active options if provided
     if candidate_names:
-        norm_cands = [c.lower().strip() for c in candidate_names]
-        if canonical_name.lower().strip() not in norm_cands:
-            logger.warning("Green button card '%s' (#%d) does not belong to active options %s",
-                           canonical_name, card_id, candidate_names)
-            return None
+        norm_cands = [c.lower().strip() for c in candidate_names if c.strip()]
+        if norm_cands and verified_name.lower().strip() not in norm_cands:
+            best_cand_match = process.extractOne(
+                verified_name.lower().strip(),
+                norm_cands,
+                scorer=fuzz.token_sort_ratio
+            )
+            if best_cand_match and best_cand_match[1] >= 65.0:
+                match_idx = norm_cands.index(best_cand_match[0])
+                verified_name = candidate_names[match_idx]
+            else:
+                logger.warning("Green button card '%s' does not belong to active options %s",
+                               verified_name, candidate_names)
+                return None
 
-    logger.info("Found unambiguous green correct button at slot %d: '%s' (Canonical: %s, ID: %s, Green: %.2f)",
-                best_slot, raw_text, canonical_name, card_id, highest_green)
+    logger.info("Found unambiguous green correct button at slot %d: '%s' (Resolved: %s, ID: %s, Green: %.2f)",
+                best_slot, raw_text, verified_name, card_id, highest_green)
 
     return CorrectOptionResult(
-        correct_option=canonical_name,
+        correct_option=verified_name,
         card_id=card_id,
         slot_index=best_slot,
         confidence=round(avg_conf, 4),

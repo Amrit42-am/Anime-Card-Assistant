@@ -62,7 +62,9 @@ class AdaptiveLearning:
         predicted_name: str,
         predicted_id: Optional[int],
         card_hash: str,
-        timestamp: float
+        timestamp: float,
+        predicted_slot: Optional[int] = None,
+        predicted_confidence: float = 0.0
     ) -> str:
         """Registers active question blurred frame for subsequent result verification."""
         return self.collector.register_active_question(
@@ -72,7 +74,9 @@ class AdaptiveLearning:
             predicted_name=predicted_name,
             predicted_id=predicted_id,
             card_hash=card_hash,
-            timestamp=timestamp
+            timestamp=timestamp,
+            predicted_slot=predicted_slot,
+            predicted_confidence=predicted_confidence
         )
 
     def expire_pending_question(self, reason: str = "new_question_started"):

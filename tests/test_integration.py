@@ -18,21 +18,41 @@ from src.ai.context_analyzer import QuizState
 from src.ai.model_manager import ModelManager
 
 
+def make_mock_card_image() -> np.ndarray:
+    img = np.zeros((224, 224, 3), dtype=np.uint8)
+    img[:] = (35, 45, 65)
+    cv2.circle(img, (112, 112), 70, (200, 120, 40), -1)
+    cv2.rectangle(img, (60, 60), (164, 164), (50, 220, 180), 3)
+    cv2.line(img, (20, 20), (204, 204), (255, 255, 255), 2)
+    return img
+
+
 @pytest.fixture(scope="module")
 def pipeline():
     ModelManager.reset_instance()
     p = QuizPipeline(auto_init_models=True)
+    card_img = make_mock_card_image()
+    emb = p.encoder.encode_image(card_img)
+    test_cards = [
+        (137, "Green Bomber", emb),
+        (139, "Harmonious Soul", np.zeros(384, dtype=np.float32)),
+        (140, "Shadow Duelist", np.zeros(384, dtype=np.float32)),
+        (141, "Soul King", np.zeros(384, dtype=np.float32)),
+        (150, "Celestial Warrior", np.zeros(384, dtype=np.float32)),
+    ]
+    for cid, cname, c_emb in test_cards:
+        if p.option_reader:
+            p.option_reader.register_card(cid, cname)
+        if p.matcher:
+            p.matcher.add_card(cid, cname, embedding=c_emb)
     yield p
     ModelManager.reset_instance()
 
 
 def create_mock_quiz_frame(card_name: str, options: list[str], blur_k: int = 35) -> dict:
     """Creates a mock game frame bundle with blurred card artwork and 4 2x2 option buttons."""
-    # 1. Base card image: load a real card artwork from assets
-    card_path = "assets/cards/card_137_green-bomber.png"
-    real_img = cv2.imread(card_path)
-    if real_img is None:
-        real_img = np.ones((224, 224, 3), dtype=np.uint8) * 120
+    # 1. Base card image: patterned synthetic card artwork
+    real_img = make_mock_card_image()
 
     # Apply blur
     k = max(3, blur_k if blur_k % 2 == 1 else blur_k + 1)
@@ -41,7 +61,7 @@ def create_mock_quiz_frame(card_name: str, options: list[str], blur_k: int = 35)
     # 2. 2x2 Options frame with 4 buttons: TL, TR, BL, BR
     btn_frames = []
     btn_h = 60
-    btn_w = 140
+    btn_w = 200
 
     for i, name in enumerate(options):
         btn = np.ones((btn_h, btn_w, 3), dtype=np.uint8) * 40
@@ -153,7 +173,7 @@ def test_pipeline_step_lifecycle(pipeline):
     assert report2 is None
 
     # 2. Result Revealed Screen (Green Bomber button is green)
-    real_card = cv2.imread("assets/cards/card_137_green-bomber.png")
+    real_card = make_mock_card_image()
     result_buttons = []
     opt_w = 260
     for i, name in enumerate(options):
@@ -370,7 +390,7 @@ def test_complete_quiz_lifecycle_state_machine(pipeline):
     assert report2 is None
 
     # 3. State: RESULT_REVEALED (Green button detected + clear artwork)
-    real_card = cv2.imread("assets/cards/card_137_green-bomber.png")
+    real_card = make_mock_card_image()
     result_buttons = []
     for name in options:
         btn = np.ones((56, 252, 3), dtype=np.uint8)

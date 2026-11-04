@@ -28,24 +28,11 @@ source .venv/bin/activate
 echo "==> Installing / updating dependencies from requirements.txt..."
 pip install -r requirements.txt
 
-# 3. Check and build canonical card dataset
-if [ ! -f "data/cards.json" ] || [ ! -f "data/cards.db" ]; then
-    echo "==> Collecting canonical card references and building local database..."
-    python scripts/collect_cards.py
-fi
-
-# 4. Generate synthetic blurs and embeddings if needed
-if [ ! -f "models/embeddings/card_embeddings.npz" ]; then
-    echo "==> Generating synthetic blur variants and building embeddings..."
-    python scripts/generate_blurs.py
-    python scripts/build_embeddings.py
-fi
-
-# 5. Download and cryptographically verify approved DINOv2 model weights
+# 3. Download and cryptographically verify approved DINOv2 model weights
 echo "==> Downloading approved model checkpoints and verifying SHA256 checksums..."
 python scripts/download_models.py
 
-# 6. Verify full offline integrity
+# 4. Verify full offline integrity
 echo "==> Validating complete offline installation..."
 python -c "
 from src.ai.model_manager import ModelManager

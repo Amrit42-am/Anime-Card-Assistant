@@ -24,10 +24,8 @@ ui:
   accent_color: "#38bdf8"
 
 paths:
-  cards_json: "data/cards.json"
-  cards_db: "data/cards.db"
-  embeddings_npz: "models/embeddings/card_embeddings.npz"
-  calibration_json: "data/calibration.json"
-  memory_db: "data/card_memory.db"
+  self_learning_db: "data/self_learning.db"
+  learned_cards_dir: "data/learned_cards"
   learned_blurs_dir: "data/learned_blurs"
+  calibration_json: "data/calibration.json"
 

@@ -39,31 +39,14 @@ if ! python -c "import PySide6, torch, timm, cv2, mss, rapidfuzz, safetensors, V
     exit 1
 fi
 
-# 3. Preflight Check: Dataset Existence
-if [ ! -f "data/cards.json" ] || [ ! -f "data/cards.db" ]; then
-    echo "ERROR: Canonical card dataset not found in data/."
-    echo "Please run one-time preparation first while connected to the internet:"
-    echo "    ./prepare.sh"
-    exit 1
-fi
-
-# 4. Preflight Check: Embeddings Existence
-if [ ! -f "models/embeddings/card_embeddings.npz" ]; then
-    echo "ERROR: Precomputed card embeddings not found in models/embeddings/."
-    echo "Please run one-time preparation first while connected to the internet:"
-    echo "    ./prepare.sh"
-    exit 1
-fi
-
-# 5. Preflight Check: Local Model Checkpoint Existence
+# 3. Preflight Check: Local Model Checkpoint Existence
 if [ ! -f "models/dinov2/vit_small_patch14_dinov2.safetensors" ]; then
     echo "ERROR: Local DINOv2 model checkpoint not found in models/dinov2/."
-    echo "Please run one-time preparation first while connected to the internet:"
-    echo "    ./prepare.sh"
+    echo "Please ensure the offline model weights exist in models/dinov2/."
     exit 1
 fi
 
-# 6. Preflight Check: Local Manifest Verification (Strictly Offline)
+# 4. Preflight Check: Local Manifest Verification (Strictly Offline)
 if ! python -c "
 import os
 os.environ['REQUIRE_OFFLINE'] = '1'

@@ -11,7 +11,7 @@ Allows repeated cards across consecutive rounds without blanket cooldown suppres
 from dataclasses import dataclass
 import logging
 import time
-from typing import Optional, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple
 import cv2
 import numpy as np
 
@@ -183,7 +183,7 @@ class QuestionDetector:
 
         return has_green, has_red
 
-    def process_frame_bundle(self, bundle: Any) -> QuestionEvent:
+    def process_frame_bundle(self, bundle: Any | Dict[str, Any]) -> QuestionEvent:
         """
         Advances the state machine based on visual evidence from frame bundle
         or PerceptionFrame.

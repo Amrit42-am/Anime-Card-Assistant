@@ -51,19 +51,7 @@ def main():
     if not manager.is_offline_verified:
         logger.error("Offline execution failed verification: %s. Please run: ./prepare.sh", manager.verification_message)
         sys.exit(1)
-    logger.info("✓ Strict offline execution verified: local checkpoints and embeddings validated.")
-
-    # Preflight check for card dataset and embeddings
-    cards_json = Path("data/cards.json")
-    embeddings_npz = Path("models/embeddings/card_embeddings.npz")
-
-    if not cards_json.exists():
-        logger.error("Dataset not found at %s. Please run: ./prepare.sh", cards_json)
-        sys.exit(1)
-
-    if not embeddings_npz.exists():
-        logger.error("Embeddings not found at %s. Please run: ./prepare.sh", embeddings_npz)
-        sys.exit(1)
+    logger.info("✓ Strict offline execution verified: local checkpoints validated.")
 
     # Lazy import heavy Qt & Pipeline modules after argument parsing
     from PySide6.QtCore import Qt

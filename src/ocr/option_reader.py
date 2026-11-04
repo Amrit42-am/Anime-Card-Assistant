@@ -20,6 +20,8 @@ from rapidfuzz import process, fuzz
 import shutil
 import os
 
+from src.memory.self_learning_db import SelfLearningDatabase
+
 logger = logging.getLogger("option_reader")
 
 try:
@@ -132,19 +134,47 @@ def normalize_detected_options(candidates: Optional[List[Any]]) -> List[Dict[str
 class OptionReader:
     """Reads and parses the 4 candidate card names from quiz button regions."""
 
-    def __init__(self, cards_json_path: Path = Path("data/cards.json")):
+    def __init__(
+        self,
+        cards_json_path: Optional[Path] = None,
+        db: Optional[SelfLearningDatabase] = None
+    ):
         self.cards: List[Dict[str, Any]] = []
         self.canonical_names: List[str] = []
         self.name_to_id: Dict[str, int] = {}
+        self.db = db
 
-        if cards_json_path.exists():
+        # 1. Load from database if available
+        if self.db is None:
+            self.db = SelfLearningDatabase()
+        db_cards = self.db.get_all_cards()
+        if db_cards:
+            self.canonical_names = [c.canonical_name for c in db_cards]
+            self.name_to_id = {c.canonical_name.lower().strip(): c.card_id for c in db_cards}
+            logger.info("OptionReader initialized with %d canonical cards from database.", len(self.canonical_names))
+
+        # 2. Backward compatibility: load from cards_json_path if provided and exists
+        if cards_json_path and Path(cards_json_path).exists():
             with open(cards_json_path, "r", encoding="utf-8") as f:
                 self.cards = json.load(f)
-            self.canonical_names = [c["name"] for c in self.cards]
-            self.name_to_id = {c["name"].lower().strip(): c["id"] for c in self.cards}
-            logger.info("OptionReader initialized with %d canonical cards.", len(self.canonical_names))
-        else:
-            logger.warning("cards.json not found at %s. Canonical resolution disabled.", cards_json_path)
+            for c in self.cards:
+                cname = c["name"]
+                cid = c["id"]
+                if cname not in self.canonical_names:
+                    self.canonical_names.append(cname)
+                self.name_to_id[cname.lower().strip()] = cid
+            logger.info("OptionReader loaded %d canonical cards from %s.", len(self.cards), cards_json_path)
+
+        if not self.canonical_names:
+            logger.info("OptionReader initialized with 0 canonical cards (Cold Start).")
+
+    def register_card(self, card_id: int, canonical_name: str):
+        """Dynamically registers a newly discovered card into known canonical names."""
+        clean_name = canonical_name.strip()
+        lower_name = clean_name.lower()
+        if clean_name not in self.canonical_names:
+            self.canonical_names.append(clean_name)
+        self.name_to_id[lower_name] = card_id
 
     def preprocess_button_image(self, img: np.ndarray) -> np.ndarray:
         """
@@ -355,12 +385,25 @@ class OptionReader:
                 avg_conf = 0.0
 
             canonical, cid, fuzzy_score = self.resolve_canonical_name(raw_text)
-            is_valid = (cid is not None) and (fuzzy_score >= 65.0)
+            clean_str = self.clean_text(raw_text)
+
+            # Validation logic:
+            # 1. If known card with good fuzzy score
+            if cid is not None and fuzzy_score >= 65.0:
+                is_valid = True
+                display_name = canonical
+            # 2. If unseen card with clean text >= 3 chars and sufficient OCR confidence
+            elif len(clean_str) >= 3 and avg_conf >= 0.25:
+                is_valid = True
+                display_name = clean_str
+            else:
+                is_valid = False
+                display_name = clean_str if clean_str else raw_text
 
             candidates.append(CandidateOption(
                 slot_index=i,
                 raw_text=raw_text,
-                canonical_name=canonical if is_valid else raw_text,
+                canonical_name=display_name,
                 card_id=cid,
                 ocr_confidence=avg_conf,
                 fuzzy_score=fuzzy_score,

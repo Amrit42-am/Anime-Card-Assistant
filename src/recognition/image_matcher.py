@@ -1,10 +1,10 @@
 """
 src/recognition/image_matcher.py
 
-Phase 2.4 & 7: Core Image Matching Engine.
-Implements the 4-candidate matching strategy with full 286-card fallback,
-cosine similarity computation across clean and synthetic blur embeddings,
-and integration with learned blur memory.
+Self-Learning Dynamic Image Matching Engine for Anime Card Assistant.
+Supports cold-start with 0 cards, incremental memory growth,
+candidate-restricted similarity scoring against clean artwork and verified blur samples,
+and integration with SelfLearningDatabase.
 """
 
 from dataclasses import dataclass
@@ -16,6 +16,7 @@ import numpy as np
 from rapidfuzz import process, fuzz
 
 from src.recognition.confidence import ConfidenceCalibrator
+from src.memory.self_learning_db import SelfLearningDatabase
 
 logger = logging.getLogger("image_matcher")
 
@@ -23,7 +24,7 @@ logger = logging.getLogger("image_matcher")
 @dataclass
 class MatchResult:
     card_name: str
-    card_id: int
+    card_id: Optional[int]
     raw_score: float
     confidence: float
     margin: float
@@ -81,41 +82,139 @@ class MatchResult:
 
 
 class ImageMatcher:
-    """Matches query card embeddings against precomputed reference and blur embeddings."""
+    """Dynamic Image Matcher that grows as new cards and blur samples are learned."""
 
     def __init__(
         self,
-        embeddings_path: Path = Path("models/embeddings/card_embeddings.npz"),
+        db: Optional[SelfLearningDatabase] = None,
+        embeddings_path: Optional[Path] = None,
         calibrator: Optional[ConfidenceCalibrator] = None,
     ):
-        if not embeddings_path.exists():
-            raise FileNotFoundError(f"Embeddings file not found at {embeddings_path}")
-
-        logger.info("Loading precomputed card embeddings from %s...", embeddings_path)
-        data = np.load(embeddings_path, allow_pickle=True)
-
-        self.card_ids = data["card_ids"]
-        self.card_names = [str(name) for name in data["card_names"]]
-        self.clean_embeddings = data["clean_embeddings"].astype(np.float32)       # (N, D)
-        self.blur_embeddings = data["blur_embeddings"].astype(np.float32)         # (N, 6, D)
-        self.composite_embeddings = data["composite_embeddings"].astype(np.float32)  # (N, D)
-
-        self.num_cards, self.num_variants, self.dim = self.blur_embeddings.shape
         self.calibrator = calibrator or ConfidenceCalibrator()
+        self.db = db
 
-        # Build name lookup indexes
+        self.card_ids: List[int] = []
+        self.card_names: List[str] = []
+        self.clean_embeddings: np.ndarray = np.empty((0, 384), dtype=np.float32)
+        self.blur_embeddings_map: Dict[int, List[np.ndarray]] = {}
+
+        self.name_to_index: Dict[str, int] = {}
+        self.id_to_index: Dict[int, int] = {}
+
+        # 1. Load from legacy embeddings_path if provided and exists
+        if embeddings_path and Path(embeddings_path).exists():
+            self._load_legacy_embeddings(Path(embeddings_path))
+        # 2. Otherwise load from SelfLearningDatabase
+        else:
+            if self.db is None:
+                self.db = SelfLearningDatabase()
+            self._load_from_db()
+
+    def _load_from_db(self):
+        """Loads all verified cards and blur samples from the self-learning database."""
+        cards = self.db.get_all_cards()
+        if not cards:
+            logger.info("Self-learning ImageMatcher initialized with 0 cards (Cold Start).")
+            return
+
+        cids = []
+        names = []
+        embs = []
+
+        for c in cards:
+            cids.append(c.card_id)
+            names.append(c.canonical_name)
+            if c.embedding is not None and len(c.embedding) == 384:
+                embs.append(c.embedding.astype(np.float32))
+            else:
+                embs.append(np.zeros(384, dtype=np.float32))
+
+        self.card_ids = cids
+        self.card_names = names
+        self.clean_embeddings = np.vstack(embs).astype(np.float32)
+
+        # Build name & id lookup indexes
         self.name_to_index = {name.lower().strip(): idx for idx, name in enumerate(self.card_names)}
-        self.id_to_index = {int(cid): idx for idx, cid in enumerate(self.card_ids)}
+        self.id_to_index = {cid: idx for idx, cid in enumerate(self.card_ids)}
 
-        logger.info("Loaded %d cards (dim: %d, variants: %d) into memory.", self.num_cards, self.dim, self.num_variants)
+        # Load blur samples
+        samples = self.db.get_all_verified_blur_samples()
+        for s in samples:
+            if s.blur_embedding is not None and len(s.blur_embedding) == 384:
+                if s.card_id not in self.blur_embeddings_map:
+                    self.blur_embeddings_map[s.card_id] = []
+                self.blur_embeddings_map[s.card_id].append(s.blur_embedding.astype(np.float32))
+
+        logger.info(
+            "Self-learning ImageMatcher loaded %d cards and %d blur samples from database.",
+            len(self.card_ids), len(samples)
+        )
+
+    def _load_legacy_embeddings(self, path: Path):
+        """Loads from an existing .npz file (e.g. for synthetic tests)."""
+        logger.info("Loading reference embeddings from %s...", path)
+        data = np.load(path, allow_pickle=True)
+        self.card_ids = [int(cid) for cid in data["card_ids"]]
+        self.card_names = [str(name) for name in data["card_names"]]
+        self.clean_embeddings = data["clean_embeddings"].astype(np.float32)
+
+        if "blur_embeddings" in data:
+            blurs = data["blur_embeddings"].astype(np.float32)
+            for idx, cid in enumerate(self.card_ids):
+                # blurs[idx] shape: (variants, 384)
+                self.blur_embeddings_map[cid] = [v for v in blurs[idx]]
+
+        self.name_to_index = {name.lower().strip(): idx for idx, name in enumerate(self.card_names)}
+        self.id_to_index = {cid: idx for idx, cid in enumerate(self.card_ids)}
+
+    def add_card(self, card_id: int, canonical_name: str, embedding: Optional[np.ndarray] = None):
+        """Dynamically registers or updates a card in memory."""
+        clean_name = canonical_name.strip()
+        emb = embedding.astype(np.float32) if embedding is not None else np.zeros(384, dtype=np.float32)
+        norm = np.linalg.norm(emb)
+        if norm > 0:
+            emb /= norm
+
+        if card_id in self.id_to_index:
+            idx = self.id_to_index[card_id]
+            self.card_names[idx] = clean_name
+            if embedding is not None:
+                self.clean_embeddings[idx] = emb
+            self.name_to_index[clean_name.lower()] = idx
+        else:
+            idx = len(self.card_ids)
+            self.card_ids.append(card_id)
+            self.card_names.append(clean_name)
+            if self.clean_embeddings.size == 0:
+                self.clean_embeddings = emb.reshape(1, 384)
+            else:
+                self.clean_embeddings = np.vstack([self.clean_embeddings, emb.reshape(1, 384)])
+            self.id_to_index[card_id] = idx
+            self.name_to_index[clean_name.lower()] = idx
+
+        logger.debug("ImageMatcher updated card #%d: '%s'", card_id, clean_name)
+
+    def add_blur_sample(self, card_id: int, blur_embedding: np.ndarray):
+        """Adds a verified blur sample embedding to a card."""
+        emb = blur_embedding.astype(np.float32).flatten()
+        norm = np.linalg.norm(emb)
+        if norm > 0:
+            emb /= norm
+
+        if card_id not in self.blur_embeddings_map:
+            self.blur_embeddings_map[card_id] = []
+        self.blur_embeddings_map[card_id].append(emb)
+        logger.debug("ImageMatcher added blur sample to card #%d (Total samples: %d)",
+                     card_id, len(self.blur_embeddings_map[card_id]))
 
     def find_card_index(self, name: str, threshold: float = 75.0) -> Optional[int]:
         """Find card index from string name, with fuzzy matching fallback."""
+        if not self.card_names:
+            return None
         clean = name.lower().strip()
         if clean in self.name_to_index:
             return self.name_to_index[clean]
 
-        # Fuzzy match against canonical names
         best_match = process.extractOne(
             clean,
             list(self.name_to_index.keys()),
@@ -131,88 +230,89 @@ class ImageMatcher:
         query_embedding: np.ndarray,
         candidate_names: List[str],
         learned_memory: Optional[Any] = None
-    ) -> Dict[str, Any]:
+    ) -> MatchResult:
         """
-        4-Candidate Recognition Strategy:
-        1. Resolve candidate names to database card indices.
-        2. If learned memory exists, check for confirmed matches among candidates.
-        3. Compare query embedding against candidate blur & clean representations.
-        4. Rank candidates and return top match with calibrated confidence.
+        Matches query embedding against candidate cards:
+        - If database is empty or cards are unseen: returns cold-start provisional result.
+        - If cards are known: computes cosine similarities against clear and blur samples.
         """
         query_embedding = query_embedding.astype(np.float32).flatten()
-        # Ensure unit length
         q_norm = np.linalg.norm(query_embedding)
         if q_norm > 0:
             query_embedding /= q_norm
 
-        candidate_indices = []
-        resolved_names = []
-        for name in candidate_names:
-            idx = self.find_card_index(name)
-            if idx is not None:
-                candidate_indices.append(idx)
-                resolved_names.append(self.card_names[idx])
-            else:
-                logger.debug("Candidate name '%s' could not be resolved in database.", name)
-
-        # Fallback to all cards if candidate resolution failed or yielded < 2 candidates
-        if len(candidate_indices) < 2:
-            logger.warning("Fewer than 2 candidates resolved (%d found), falling back to full database search.", len(candidate_indices))
-            return self.match_all(query_embedding, top_k=4, learned_memory=learned_memory)
-
-        # Check Learned Memory first (Phase 6 integration)
-        if learned_memory:
-            memory_match = learned_memory.match_sample(
-                query_embedding=query_embedding,
-                allowed_card_ids=[int(self.card_ids[i]) for i in candidate_indices]
+        # Cold start handling: zero known cards in database
+        if len(self.card_ids) == 0:
+            first_cand = candidate_names[0] if candidate_names else "Unknown"
+            return MatchResult(
+                status="unseen",
+                card_name=first_cand,
+                card_id=None,
+                raw_score=0.0,
+                confidence=0.30,
+                margin=0.0,
+                matched_from="cold_start_unseen",
+                alternatives=[],
+                confidence_report=None
             )
-            if memory_match and memory_match.get("confidence", 0) >= 0.82:
-                matched_id = memory_match["card_id"]
-                idx = self.id_to_index[matched_id]
-                report = self.calibrator.evaluate(
-                    top_score=memory_match["confidence"],
-                    second_score=memory_match.get("second_confidence", 0.5),
-                    source="learned_memory"
-                )
-                return MatchResult(
-                    status="matched" if report.is_confident else "uncertain",
-                    card_name=self.card_names[idx],
-                    card_id=int(self.card_ids[idx]),
-                    confidence=report.calibrated_confidence,
-                    confidence_report=report,
-                    matched_from="learned_memory",
-                    raw_score=memory_match["confidence"],
-                    margin=report.margin,
-                    alternatives=memory_match.get("alternatives", [])
-                )
 
-        # Compare against candidate embeddings
+        # Check candidate resolution
         candidate_scores = []
-        for idx in candidate_indices:
-            # 1. Similarity with clean reference
-            clean_sim = float(np.dot(query_embedding, self.clean_embeddings[idx]))
+        for name in candidate_names:
+            clean_name = name.strip()
+            idx = self.find_card_index(clean_name)
+            if idx is not None:
+                cid = self.card_ids[idx]
+                cname = self.card_names[idx]
+                # 1. Similarity with clear reference artwork
+                clean_vec = self.clean_embeddings[idx]
+                clean_sim = float(np.dot(query_embedding, clean_vec)) if np.linalg.norm(clean_vec) > 0 else 0.0
 
-            # 2. Similarity with all synthetic blur variants (take maximum)
-            # blur_embeddings[idx] shape: (num_variants, dim)
-            variant_sims = np.dot(self.blur_embeddings[idx], query_embedding)
-            max_variant_sim = float(np.max(variant_sims))
+                # 2. Similarity with all collected blur samples for this card
+                blur_sims = []
+                for b_emb in self.blur_embeddings_map.get(cid, []):
+                    blur_sims.append(float(np.dot(query_embedding, b_emb)))
+                max_blur_sim = float(max(blur_sims)) if blur_sims else 0.0
 
-            # 3. Composite blur similarity
-            comp_sim = float(np.dot(query_embedding, self.composite_embeddings[idx]))
+                # Composite score: maximum of blur samples and clean artwork
+                best_sim = max(max_blur_sim, clean_sim)
 
-            # Overall score: weighted combination favoring closest blur variant
-            score = max(max_variant_sim, 0.9 * comp_sim, 0.85 * clean_sim)
+                candidate_scores.append({
+                    "card_id": cid,
+                    "card_name": cname,
+                    "score": best_sim,
+                    "clean_similarity": clean_sim,
+                    "blur_similarity": max_blur_sim,
+                    "is_known": True
+                })
+            else:
+                # Unseen candidate card
+                candidate_scores.append({
+                    "card_id": None,
+                    "card_name": clean_name,
+                    "score": 0.0,
+                    "clean_similarity": 0.0,
+                    "blur_similarity": 0.0,
+                    "is_known": False
+                })
 
-            candidate_scores.append({
-                "card_id": int(self.card_ids[idx]),
-                "card_name": self.card_names[idx],
-                "score": score,
-                "clean_similarity": clean_sim,
-                "blur_similarity": max_variant_sim,
-                "composite_similarity": comp_sim
-            })
+        # Check if any candidate was known
+        known_candidates = [c for c in candidate_scores if c["is_known"]]
+        if not known_candidates:
+            first_cand = candidate_names[0] if candidate_names else "Unknown"
+            return MatchResult(
+                status="unseen",
+                card_name=first_cand,
+                card_id=None,
+                raw_score=0.0,
+                confidence=0.30,
+                margin=0.0,
+                matched_from="cold_start_unseen",
+                alternatives=candidate_scores,
+                confidence_report=None
+            )
 
-        # Rank descending
+        # Rank known candidates descending
         candidate_scores.sort(key=lambda x: x["score"], reverse=True)
         top = candidate_scores[0]
         second = candidate_scores[1] if len(candidate_scores) > 1 else None
@@ -221,16 +321,16 @@ class ImageMatcher:
         report = self.calibrator.evaluate(
             top_score=top["score"],
             second_score=second_score,
-            source="synthetic_blurs"
+            source="learned_memory" if self.blur_embeddings_map.get(top["card_id"]) else "reference_artwork"
         )
 
         return MatchResult(
-            status="matched" if report.is_confident else "uncertain",
+            status="matched" if (report.is_confident and top["is_known"] and top["score"] >= 0.50) else "uncertain",
             card_name=top["card_name"],
             card_id=top["card_id"],
             confidence=report.calibrated_confidence,
             confidence_report=report,
-            matched_from="synthetic_blurs",
+            matched_from="learned_blur_memory" if self.blur_embeddings_map.get(top["card_id"]) else "clear_artwork",
             raw_score=top["score"],
             margin=report.margin,
             alternatives=candidate_scores[1:]
@@ -241,59 +341,41 @@ class ImageMatcher:
         query_embedding: np.ndarray,
         top_k: int = 4,
         learned_memory: Optional[Any] = None
-    ) -> Dict[str, Any]:
-        """
-        Fallback search across all 286 cards when candidates are unavailable.
-        """
+    ) -> MatchResult:
+        """Fallback search across all learned cards in the database."""
         query_embedding = query_embedding.astype(np.float32).flatten()
         q_norm = np.linalg.norm(query_embedding)
         if q_norm > 0:
             query_embedding /= q_norm
 
-        # Check learned memory across all cards
-        if learned_memory:
-            memory_match = learned_memory.match_sample(query_embedding=query_embedding)
-            if memory_match and memory_match.get("confidence", 0) >= 0.88:
-                matched_id = memory_match["card_id"]
-                idx = self.id_to_index[matched_id]
-                report = self.calibrator.evaluate(
-                    top_score=memory_match["confidence"],
-                    second_score=memory_match.get("second_confidence", 0.5),
-                    source="learned_memory"
-                )
-                return MatchResult(
-                    status="matched" if report.is_confident else "uncertain",
-                    card_name=self.card_names[idx],
-                    card_id=int(self.card_ids[idx]),
-                    confidence=report.calibrated_confidence,
-                    confidence_report=report,
-                    matched_from="learned_memory",
-                    raw_score=memory_match["confidence"],
-                    margin=report.margin,
-                    alternatives=[]
-                )
+        if len(self.card_ids) == 0:
+            return MatchResult(
+                status="unseen",
+                card_name="Unknown",
+                card_id=None,
+                raw_score=0.0,
+                confidence=0.25,
+                margin=0.0,
+                matched_from="cold_start_unseen",
+                alternatives=[],
+                confidence_report=None
+            )
 
-        # Vectorized dot product against all composite embeddings
-        comp_scores = np.dot(self.composite_embeddings, query_embedding)  # (N,)
-
-        # Vectorized dot product against all blur variants: shape (N, 6)
-        # blur_embeddings: (N, 6, D) dot (D,) -> (N, 6)
-        variant_sims = np.tensordot(self.blur_embeddings, query_embedding, axes=([2], [0]))
-        max_variant_sims = np.max(variant_sims, axis=1)  # (N,)
-
-        combined_scores = np.maximum(max_variant_sims, comp_scores)
-        top_indices = np.argsort(combined_scores)[::-1][:top_k]
-
-        ranked = []
-        for rank_idx in top_indices:
-            ranked.append({
-                "card_id": int(self.card_ids[rank_idx]),
-                "card_name": self.card_names[rank_idx],
-                "score": float(combined_scores[rank_idx])
+        scores = []
+        for idx, cid in enumerate(self.card_ids):
+            clean_sim = float(np.dot(query_embedding, self.clean_embeddings[idx])) if np.linalg.norm(self.clean_embeddings[idx]) > 0 else 0.0
+            blur_sims = [float(np.dot(query_embedding, b)) for b in self.blur_embeddings_map.get(cid, [])]
+            max_blur = max(blur_sims) if blur_sims else 0.0
+            best_sim = max(clean_sim, max_blur)
+            scores.append({
+                "card_id": cid,
+                "card_name": self.card_names[idx],
+                "score": best_sim
             })
 
-        top = ranked[0]
-        second_score = ranked[1]["score"] if len(ranked) > 1 else 0.0
+        scores.sort(key=lambda x: x["score"], reverse=True)
+        top = scores[0]
+        second_score = scores[1]["score"] if len(scores) > 1 else 0.0
 
         report = self.calibrator.evaluate(
             top_score=top["score"],
@@ -302,7 +384,7 @@ class ImageMatcher:
         )
 
         return MatchResult(
-            status="matched" if report.is_confident else "uncertain",
+            status="matched" if (report.is_confident and top["score"] >= 0.50) else "uncertain",
             card_name=top["card_name"],
             card_id=top["card_id"],
             confidence=report.calibrated_confidence,
@@ -310,5 +392,5 @@ class ImageMatcher:
             matched_from="fallback_all_cards",
             raw_score=top["score"],
             margin=report.margin,
-            alternatives=ranked[1:]
+            alternatives=scores[1:top_k]
         )

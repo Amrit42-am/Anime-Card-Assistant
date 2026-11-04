@@ -1,29 +1,22 @@
 """
 tests/test_recognition.py
 
-Unit tests for visual encoder and candidate matcher:
+Unit tests for DINOv2 visual encoder and self-learning candidate matcher:
 - Feature vector dimensionality & normalization
-- Matching clear and synthetic blurred cards against 4 candidates
-- Top candidate ranking accuracy
+- Cold-start handling with zero known cards
+- Dynamic card learning and candidate ranking
+- Blur sample integration enhancing recognition confidence
 - Confidence calibration & margin evaluation
 """
 
 import cv2
-from pathlib import Path
 import numpy as np
 import pytest
 
 from src.recognition.image_encoder import get_image_encoder
 from src.recognition.image_matcher import ImageMatcher
 from src.recognition.confidence import ConfidenceCalibrator
-
-EMBEDDINGS_NPZ = Path("models/embeddings/card_embeddings.npz")
-
-
-@pytest.fixture(scope="module")
-def matcher():
-    assert EMBEDDINGS_NPZ.exists(), "Embeddings file must exist before testing matcher."
-    return ImageMatcher(embeddings_path=EMBEDDINGS_NPZ)
+from src.memory.self_learning_db import SelfLearningDatabase
 
 
 @pytest.fixture(scope="module")
@@ -31,77 +24,70 @@ def encoder():
     return get_image_encoder("dinov2")
 
 
+@pytest.fixture
+def empty_matcher(tmp_path):
+    db_file = tmp_path / "test_matcher.db"
+    db = SelfLearningDatabase(db_path=db_file)
+    return ImageMatcher(db=db)
+
+
 def test_encoder_output(encoder):
-    # Dummy image: 224x224 RGB
+    """Verify DINOv2 produces 384-dim unit-normalized feature vectors."""
     dummy = (np.random.rand(224, 224, 3) * 255).astype(np.uint8)
     vec = encoder.encode_image(dummy)
     assert vec.ndim == 1
     assert len(vec) == 384
-    # Check L2 normalization
     norm = np.linalg.norm(vec)
     assert pytest.approx(norm, 0.001) == 1.0
 
 
-def test_matcher_independent_image_query(matcher, encoder):
-    """
-    Leakage-free test: Loads image from disk and encodes it dynamically.
-    Never uses pre-stored embeddings from the reference database.
-    """
-    card_path = "assets/cards/card_137_green-bomber.png"
-    img = cv2.imread(card_path)
-    assert img is not None
+def test_matcher_cold_start_unseen(empty_matcher, encoder):
+    """Verify empty matcher cleanly handles unseen cards without crashing."""
+    dummy = (np.random.rand(224, 224, 3) * 255).astype(np.uint8)
+    query = encoder.encode_image(dummy)
 
-    query = encoder.encode_image(img)
-    target_name = "Green Bomber"
+    candidates = ["Manga Writer", "Tutorial Boss", "White Flame Defender", "Royal Paladin"]
+    res = empty_matcher.match_candidates(query, candidates)
 
-    candidates = [target_name, matcher.card_names[1], matcher.card_names[2], matcher.card_names[3]]
-    result = matcher.match_candidates(query, candidates)
-
-    assert result["card_name"] == target_name
-    assert result["confidence"] > 0.8
-    assert result["raw_score"] > 0.90
-    assert result["status"] == "matched"
+    assert res.status == "unseen"
+    assert res.matched_from == "cold_start_unseen"
+    assert res.card_id is None
+    assert res.confidence <= 0.40
 
 
-def test_matcher_independent_synthetic_blur(matcher, encoder):
-    """
-    Leakage-free test: Generates an independent, non-cached blur transformation
-    (kernel 31x31, sigma 11.5) on card #139, encodes dynamically, and tests candidate matching.
-    """
-    card_path = "assets/cards/card_139_harmonious-soul.png"
-    img = cv2.imread(card_path)
-    assert img is not None
+def test_matcher_dynamic_learning_and_repeat_appearance(empty_matcher, encoder):
+    """Verify that learning a card and blur sample enables confident subsequent matching."""
+    # Create two synthetic clear card images
+    card_img_a = np.zeros((224, 224, 3), dtype=np.uint8)
+    cv2.circle(card_img_a, (112, 112), 80, (255, 100, 50), -1)
 
-    # Apply independent blur parameters not present in precomputed NPZ
-    independent_blur = cv2.GaussianBlur(img, (31, 31), 11.5)
-    query = encoder.encode_image(independent_blur)
-    target_name = "Harmonious Soul"
+    card_img_b = np.zeros((224, 224, 3), dtype=np.uint8)
+    cv2.rectangle(card_img_b, (40, 40), (184, 184), (50, 200, 255), -1)
 
-    candidates = [
-        "Green Bomber",
-        target_name,
-        "Shadow Duelist",
-        "Soul King"
-    ]
+    emb_a = encoder.encode_image(card_img_a)
+    emb_b = encoder.encode_image(card_img_b)
 
-    result = matcher.match_candidates(query, candidates)
-    assert result["card_name"] == target_name
-    assert result["confidence"] > 0.65
-    assert result["margin"] > 0.04
+    # Register both cards in the matcher
+    empty_matcher.add_card(card_id=1, canonical_name="Card Alpha", embedding=emb_a)
+    empty_matcher.add_card(card_id=2, canonical_name="Card Beta", embedding=emb_b)
 
+    # Query with Card Alpha
+    res_clean = empty_matcher.match_candidates(emb_a, ["Card Alpha", "Card Beta", "Card Gamma", "Card Delta"])
+    assert res_clean.card_name == "Card Alpha"
+    assert res_clean.raw_score > 0.95
 
-def test_matcher_fallback_all_independent_image(matcher, encoder):
-    """
-    Leakage-free fallback test: Encodes an independent test image dynamically.
-    """
-    card_path = "assets/cards/card_137_green-bomber.png"
-    img = cv2.imread(card_path)
-    assert img is not None
+    # Query with a heavily blurred Card Alpha
+    blurred_a = cv2.GaussianBlur(card_img_a, (45, 45), 15.0)
+    emb_blur_a = encoder.encode_image(blurred_a)
 
-    query = encoder.encode_image(img)
-    result = matcher.match_all(query, top_k=5)
-    assert result["card_name"] == "Green Bomber"
-    assert result["status"] == "matched"
+    # Add this verified blur sample to Card Alpha
+    empty_matcher.add_blur_sample(card_id=1, blur_embedding=emb_blur_a)
+
+    # Subsequent match with blurred query now leverages the learned blur sample
+    res_blur = empty_matcher.match_candidates(emb_blur_a, ["Card Alpha", "Card Beta", "Card Gamma", "Card Delta"])
+    assert res_blur.card_name == "Card Alpha"
+    assert res_blur.raw_score > 0.95
+    assert res_blur.matched_from == "learned_blur_memory"
 
 
 def test_confidence_calibrator():

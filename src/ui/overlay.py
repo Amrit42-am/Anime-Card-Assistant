@@ -21,6 +21,7 @@ from src.core.worker import PipelineWorker
 from src.core.decision_engine import AnswerResult
 from src.capture.calibration import CalibrationDialog
 from src.ui.components import ConfidenceBadge, SourceBadge, CorrectionDialog
+from src.ui.dashboard_dialog import LearningDashboardDialog
 from src.ocr.option_reader import normalize_detected_options
 
 logger = logging.getLogger("overlay_ui")
@@ -272,6 +273,11 @@ class FloatingOverlay(QWidget):
         self.btn_calibrate.clicked.connect(self.open_calibration)
         action_layout.addWidget(self.btn_calibrate)
 
+        self.btn_stats = QPushButton("📊 Stats")
+        self.btn_stats.setToolTip("Open Self-Learning & Accuracy Dashboard")
+        self.btn_stats.clicked.connect(self.open_dashboard)
+        action_layout.addWidget(self.btn_stats)
+
         layout.addWidget(self.action_frame)
 
         # 5. Opacity slider row
@@ -473,22 +479,42 @@ class FloatingOverlay(QWidget):
         self.latency_label.setText(f"Latency: {result.processing_time_ms:.0f} ms")
         self.update_candidates_display(result)
 
+    def open_dashboard(self):
+        """Opens the Self-Learning & Accuracy Dashboard."""
+        db = getattr(self.pipeline, "db", None)
+        dlg = LearningDashboardDialog(db=db, parent=self)
+        dlg.exec()
+
     def on_auto_learned(self, report):
         """Displays auto-learned result status."""
         if not report:
             return
         if report.verified:
-            self.auto_learn_banner.setText(f"★ Auto-Learned: {report.card_name}")
-            self.auto_learn_banner.setStyleSheet(
-                "color: #4ade80; font-size: 11px; font-weight: bold; "
-                "background: rgba(34, 197, 94, 0.2); border: 1px solid rgba(34, 197, 94, 0.4); "
-                "border-radius: 4px; padding: 3px 6px;"
-            )
+            if getattr(report, "status", "") == "CORRECT":
+                self.auto_learn_banner.setText(f"✓ PREDICTION CORRECT: {report.card_name}")
+                self.auto_learn_banner.setStyleSheet(
+                    "color: #4ade80; font-size: 11px; font-weight: bold; "
+                    "background: rgba(34, 197, 94, 0.25); border: 1px solid rgba(34, 197, 94, 0.5); "
+                    "border-radius: 4px; padding: 3px 6px;"
+                )
+            else:
+                self.auto_learn_banner.setText(f"✓ LEARNED GROUND TRUTH: {report.card_name}")
+                self.auto_learn_banner.setStyleSheet(
+                    "color: #fbbf24; font-size: 11px; font-weight: bold; "
+                    "background: rgba(245, 158, 11, 0.25); border: 1px solid rgba(245, 158, 11, 0.5); "
+                    "border-radius: 4px; padding: 3px 6px;"
+                )
+            if hasattr(self.pipeline, "db"):
+                stats = self.pipeline.db.get_stats()
+                self.db_label.setText(f"DB: {stats['total_discovered_cards']} cards")
+                self.learned_label.setText(
+                    f"Acc: {stats['accuracy_percent']:.0f}% ({stats['total_correct_predictions']}/{stats['total_verified_predictions']})"
+                )
         else:
             self.auto_learn_banner.setText(f"⚠ Result: {report.message}")
             self.auto_learn_banner.setStyleSheet(
-                "color: #f59e0b; font-size: 11px; font-weight: bold; "
-                "background: rgba(245, 158, 11, 0.2); border: 1px solid rgba(245, 158, 11, 0.4); "
+                "color: #94a3b8; font-size: 11px; font-weight: bold; "
+                "background: rgba(148, 163, 184, 0.15); border: 1px solid rgba(148, 163, 184, 0.3); "
                 "border-radius: 4px; padding: 3px 6px;"
             )
         self.auto_learn_banner.setVisible(True)

@@ -179,11 +179,11 @@ class PerceptionEngine:
             else:
                 is_refresh = (self._last_options_hash is not None and len(self._cached_candidates) > 0)
                 candidates = self.option_reader.read_options_from_buttons(button_frames, use_retry=False)
-                valid_count = sum(1 for c in candidates if c.is_valid and c.card_id is not None)
+                valid_count = sum(1 for c in candidates if c.is_valid)
                 if valid_count < 4:
                     # Retry with alternative aggressive preprocessing
                     retry_candidates = self.option_reader.read_options_from_buttons(button_frames, use_retry=True)
-                    retry_valid = sum(1 for c in retry_candidates if c.is_valid and c.card_id is not None)
+                    retry_valid = sum(1 for c in retry_candidates if c.is_valid)
                     if retry_valid > valid_count:
                         candidates = retry_candidates
                         valid_count = retry_valid

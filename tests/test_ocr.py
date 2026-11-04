@@ -17,7 +17,27 @@ from src.ocr.option_reader import OptionReader
 
 @pytest.fixture(scope="module")
 def reader():
-    return OptionReader()
+    r = OptionReader()
+    test_cards = [
+        (137, "Green Bomber"),
+        (139, "Harmonious Soul"),
+        (1, "Shadow Commander"),
+        (2, "Monkey Deity"),
+        (3, "Blood Demon Triad"),
+        (4, "Fearsome Beast"),
+        (5, "White Flame Defender"),
+        (6, "Merged Beast"),
+        (7, "Copy Ninja"),
+        (8, "Awakened Light Admiral"),
+        (9, "Awakened Stark Gunner"),
+        (10, "Shadow Duelist"),
+        (11, "Soul King"),
+        (12, "Tutorial Boss"),
+        (13, "Royal Paladin"),
+    ]
+    for cid, cname in test_cards:
+        r.register_card(cid, cname)
+    return r
 
 
 def test_clean_text(reader):

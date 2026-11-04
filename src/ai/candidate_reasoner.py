@@ -74,7 +74,11 @@ class CandidateReasoner:
         # 1. Compute query image embedding
         query_embedding = self.encoder.encode_image(card_frame)
 
-        # 2. Validate distinct candidate options
+        # 2. Validate candidate options
+        readable_candidates = [
+            c for c in ocr_candidates
+            if c.is_valid and (c.canonical_name or c.raw_text)
+        ]
         valid_candidates = [
             c for c in ocr_candidates
             if c.is_valid and c.canonical_name and c.card_id is not None
@@ -85,6 +89,10 @@ class CandidateReasoner:
         # Standalone invocation fallback: only read buttons if candidates were not provided
         if not ocr_candidates and button_frames and len(button_frames) == 4:
             ocr_candidates = self.option_reader.read_options_from_buttons(button_frames, use_retry=False)
+            readable_candidates = [
+                c for c in ocr_candidates
+                if c.is_valid and (c.canonical_name or c.raw_text)
+            ]
             valid_candidates = [
                 c for c in ocr_candidates
                 if c.is_valid and c.canonical_name and c.card_id is not None
@@ -92,20 +100,20 @@ class CandidateReasoner:
             unique_ids = set(c.card_id for c in valid_candidates)
             has_four_distinct = (len(valid_candidates) == 4 and len(unique_ids) == 4)
 
-        # Candidate restriction rule: strictly require 4 distinct resolved candidates
-        # to restrict visual matching. Otherwise, fall back to controlled full database matching.
+        # Candidate restriction rule: strictly require 4 distinct resolved known candidates
+        # to mark as constrained.
         is_constrained = has_four_distinct
 
-        if is_constrained:
-            candidate_names = [c.canonical_name for c in valid_candidates]
+        if has_four_distinct or len(readable_candidates) == 4:
+            candidate_names = [c.canonical_name if c.canonical_name else c.raw_text for c in readable_candidates]
             match_res = self.matcher.match_candidates(
                 query_embedding=query_embedding,
                 candidate_names=candidate_names,
                 learned_memory=learned_memory
             )
         else:
-            logger.info("Fewer than 4 distinct candidates resolved (%d/4 distinct). Running full-database fallback.",
-                        len(unique_ids))
+            logger.info("Fewer than 4 readable candidates resolved (%d/4). Running full-database fallback.",
+                        len(readable_candidates))
             match_res = self.matcher.match_all(
                 query_embedding=query_embedding,
                 top_k=4,
@@ -182,8 +190,15 @@ class CandidateReasoner:
                 if not any(c.slot_index == i and c.is_valid and c.card_id is not None for c in ocr_candidates)
             ]
             failed_str = f" (unresolved: {', '.join(failed_slots)})" if failed_slots else ""
-            confidence_level = "WAITING FOR VALID OPTIONS" if not valid_candidates else "OCR RECOVERY"
-            explanation = f"Provisional visual match: {top_name} ({len(unique_ids)}/4 distinct options resolved{failed_str})"
+            if len(readable_candidates) == 4 and not valid_candidates:
+                confidence_level = "COLD START UNSEEN"
+                explanation = f"Provisional cold-start guess: {top_name} (0/4 known cards in DB)"
+            elif not valid_candidates:
+                confidence_level = "WAITING FOR VALID OPTIONS"
+                explanation = f"Waiting for valid options: {len(readable_candidates)}/4 detected"
+            else:
+                confidence_level = "OCR RECOVERY"
+                explanation = f"Provisional visual match: {top_name} ({len(unique_ids)}/4 distinct options resolved{failed_str})"
             display_card_name = top_name
             calibrated_conf = min(verdict.calibrated_confidence, 0.45) if verdict.calibrated_confidence > 0 else 0.35
         elif assigned_slot is None:
