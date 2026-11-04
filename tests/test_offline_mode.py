@@ -7,6 +7,7 @@ and failure handling when local weights are absent.
 
 import json
 from pathlib import Path
+import numpy as np
 import pytest
 
 from src.ai.model_manager import ModelManager
@@ -270,7 +271,15 @@ def test_manifest_embeddings_meta_mismatch(tmp_path):
     # Put mismatched metadata (card_count 100 instead of 286)
     meta_file = emb_dir / "embeddings_meta.json"
     with open(meta_file, "w") as f:
-        json.dump({"card_count": 100, "dimension": 384, "clean_shape": [100, 384]}, f)
+        json.dump({
+            "model_name": "dinov2",
+            "encoder_class": "DINOv2Encoder",
+            "dimension": 384,
+            "card_count": 100,
+            "clean_shape": [100, 384],
+            "blur_shape": [100, 6, 384],
+            "variant_names": ["clean"]
+        }, f)
 
     dinov2_dir = fake_models_dir / "dinov2"
     dinov2_dir.mkdir(parents=True)
@@ -311,6 +320,134 @@ def test_model_manager_loads_exact_verified_weights_path():
     assert manager.verified_weights_path is not None
     assert manager.verified_weights_path.exists()
     assert manager.encoder.weights_path == manager.verified_weights_path
+
+
+def test_embeddings_meta_missing_required_field(tmp_path):
+    """Verify that omitting any required field from embeddings_meta.json fails verification."""
+    fake_models_dir = tmp_path / "models"
+    emb_dir = fake_models_dir / "embeddings"
+    emb_dir.mkdir(parents=True)
+
+    emb_file = emb_dir / "card_embeddings.npz"
+    clean = np.zeros((286, 384), dtype=np.float32)
+    blur = np.zeros((286, 6, 384), dtype=np.float32)
+    np.savez_compressed(emb_file, clean_embeddings=clean, blur_embeddings=blur)
+
+    # Missing 'variant_names'
+    meta_file = emb_dir / "embeddings_meta.json"
+    with open(meta_file, "w") as f:
+        json.dump({
+            "model_name": "dinov2",
+            "encoder_class": "DINOv2Encoder",
+            "dimension": 384,
+            "card_count": 286,
+            "clean_shape": [286, 384],
+            "blur_shape": [286, 6, 384]
+        }, f)
+
+    dinov2_dir = fake_models_dir / "dinov2"
+    dinov2_dir.mkdir(parents=True)
+    fake_weights = dinov2_dir / "weights.safetensors"
+    with open(fake_weights, "wb") as f:
+        f.write(b"dummy")
+
+    fake_manifest = {
+        "version": "1.0.0",
+        "models": {
+            "dinov2_small": {
+                "arch": "vit_small_patch14_dinov2.lvd142m",
+                "filename": "dinov2/weights.safetensors",
+                "sha256": ModelManager.compute_sha256(fake_weights),
+                "expected_dimension": 384,
+                "size_bytes": 5
+            }
+        },
+        "embeddings": {
+            "filename": "embeddings/card_embeddings.npz",
+            "expected_cards": 286,
+            "dimension": 384
+        }
+    }
+    with open(fake_models_dir / "manifest.json", "w") as f:
+        json.dump(fake_manifest, f)
+
+    manager = ModelManager(models_dir=fake_models_dir, require_offline=False)
+    is_ok, msg = manager.verify_manifest()
+    assert is_ok is False
+    assert "missing required field 'variant_names'" in msg.lower()
+
+
+def test_embeddings_meta_file_missing(tmp_path):
+    """Verify that completely missing embeddings_meta.json fails verification."""
+    fake_models_dir = tmp_path / "models"
+    emb_dir = fake_models_dir / "embeddings"
+    emb_dir.mkdir(parents=True)
+
+    emb_file = emb_dir / "card_embeddings.npz"
+    clean = np.zeros((286, 384), dtype=np.float32)
+    blur = np.zeros((286, 6, 384), dtype=np.float32)
+    np.savez_compressed(emb_file, clean_embeddings=clean, blur_embeddings=blur)
+
+    # Do NOT create embeddings_meta.json
+
+    dinov2_dir = fake_models_dir / "dinov2"
+    dinov2_dir.mkdir(parents=True)
+    fake_weights = dinov2_dir / "weights.safetensors"
+    with open(fake_weights, "wb") as f:
+        f.write(b"dummy")
+
+    fake_manifest = {
+        "version": "1.0.0",
+        "models": {
+            "dinov2_small": {
+                "arch": "vit_small_patch14_dinov2.lvd142m",
+                "filename": "dinov2/weights.safetensors",
+                "sha256": ModelManager.compute_sha256(fake_weights),
+                "expected_dimension": 384,
+                "size_bytes": 5
+            }
+        },
+        "embeddings": {
+            "filename": "embeddings/card_embeddings.npz",
+            "expected_cards": 286,
+            "dimension": 384
+        }
+    }
+    with open(fake_models_dir / "manifest.json", "w") as f:
+        json.dump(fake_manifest, f)
+
+    manager = ModelManager(models_dir=fake_models_dir, require_offline=False)
+    is_ok, msg = manager.verify_manifest()
+    assert is_ok is False
+    assert "metadata file missing" in msg.lower()
+
+
+def test_offline_mode_blocks_network(monkeypatch):
+    """Verify that QuizPipeline operates 100% offline and raises if network socket connects."""
+    import socket
+    from src.core.pipeline import QuizPipeline
+
+    # Guard: monkeypatch socket.socket.connect to raise RuntimeError if called
+    def forbidden_connect(*args, **kwargs):
+        raise RuntimeError("Network connection attempted in strict offline mode!")
+
+    monkeypatch.setattr(socket.socket, "connect", forbidden_connect)
+
+    pipeline = QuizPipeline(auto_init_models=True)
+    assert pipeline.is_offline_verified is True
+    # Run a pipeline step with dummy bundle - must not attempt any socket connection
+    dummy_bundle = {
+        "card_frame": np.zeros((100, 100, 3), dtype=np.uint8),
+        "button_frames": [np.zeros((30, 80, 3), dtype=np.uint8) for _ in range(4)],
+        "options_frame": np.zeros((60, 160, 3), dtype=np.uint8),
+        "timer_frame": None,
+        "banner_frame": None,
+        "game_frame": np.zeros((400, 600, 3), dtype=np.uint8)
+    }
+    pipeline.capture.capture_quiz_bundle = lambda *args, **kwargs: dummy_bundle
+    ans, rep = pipeline.step()
+    # Passed without triggering forbidden_connect
+
 
 
 

@@ -191,40 +191,58 @@ class ModelManager:
                             f"expected {expected_dim}"
                         )
 
-                    # Validate embeddings_meta.json if present
+                    # Validate required embeddings_meta.json
                     meta_path = emb_path.parent / "embeddings_meta.json"
-                    if meta_path.exists():
-                        try:
-                            with open(meta_path, "r", encoding="utf-8") as mf:
-                                meta = json.load(mf)
+                    if not meta_path.exists():
+                        return False, f"Embeddings metadata file missing at {meta_path}"
 
-                            if "card_count" in meta and meta["card_count"] != clean_emb.shape[0]:
+                    try:
+                        with open(meta_path, "r", encoding="utf-8") as mf:
+                            meta = json.load(mf)
+
+                        required_fields = [
+                            "model_name",
+                            "encoder_class",
+                            "dimension",
+                            "card_count",
+                            "clean_shape",
+                            "blur_shape",
+                            "variant_names"
+                        ]
+                        for field in required_fields:
+                            if field not in meta:
+                                return False, f"Missing required field '{field}' in embeddings metadata"
+
+                        if meta["card_count"] != clean_emb.shape[0]:
+                            return False, (
+                                f"Incompatible embeddings card count in metadata ({meta['card_count']}), "
+                                f"expected {clean_emb.shape[0]}"
+                            )
+
+                        if meta["dimension"] != clean_emb.shape[1]:
+                            return False, (
+                                f"Incompatible embeddings dimension in metadata ({meta['dimension']}), "
+                                f"expected {clean_emb.shape[1]}"
+                            )
+
+                        if list(meta["clean_shape"]) != list(clean_emb.shape):
+                            return False, (
+                                f"Embeddings metadata clean_shape mismatch ({meta['clean_shape']}), "
+                                f"expected {list(clean_emb.shape)}"
+                            )
+
+                        if "blur_embeddings" in data:
+                            blur_emb = data["blur_embeddings"]
+                            if list(meta["blur_shape"]) != list(blur_emb.shape):
                                 return False, (
-                                    f"Incompatible embeddings card count in metadata ({meta['card_count']}), "
-                                    f"expected {clean_emb.shape[0]}"
+                                    f"Embeddings metadata blur_shape mismatch ({meta['blur_shape']}), "
+                                    f"expected {list(blur_emb.shape)}"
                                 )
 
-                            if "dimension" in meta and meta["dimension"] != clean_emb.shape[1]:
-                                return False, (
-                                    f"Incompatible embeddings dimension in metadata ({meta['dimension']}), "
-                                    f"expected {clean_emb.shape[1]}"
-                                )
-
-                            if "clean_shape" in meta and list(meta["clean_shape"]) != list(clean_emb.shape):
-                                return False, (
-                                    f"Embeddings metadata clean_shape mismatch ({meta['clean_shape']}), "
-                                    f"expected {list(clean_emb.shape)}"
-                                )
-
-                            if "blur_embeddings" in data and "blur_shape" in meta:
-                                blur_emb = data["blur_embeddings"]
-                                if list(meta["blur_shape"]) != list(blur_emb.shape):
-                                    return False, (
-                                        f"Embeddings metadata blur_shape mismatch ({meta['blur_shape']}), "
-                                        f"expected {list(blur_emb.shape)}"
-                                    )
-                        except Exception as me:
-                            return False, f"Failed to validate embeddings metadata: {me}"
+                        if not isinstance(meta["variant_names"], list) or len(meta["variant_names"]) == 0:
+                            return False, "Embeddings metadata 'variant_names' must be a non-empty list"
+                    except Exception as me:
+                        return False, f"Failed to validate embeddings metadata: {me}"
 
             return True, "All model checkpoints and embeddings verified locally"
         except Exception as e:

@@ -88,6 +88,10 @@ class AdaptiveLearning:
         """Safely updates candidate options and IDs for pending question without touching original blurred image."""
         return self.collector.update_pending_candidates(option_names, option_ids)
 
+    def invalidate_pending_candidates(self) -> bool:
+        """Invalidates candidate options for pending question when OCR fails or is invalid."""
+        return self.collector.invalidate_pending_candidates()
+
     @property
     def pending_question(self):
         """Returns the pending active question from collector."""

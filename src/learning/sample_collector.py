@@ -30,7 +30,7 @@ class PendingQuestion:
     blurred_embedding: np.ndarray
     blur_hash: str
     option_names: List[str]
-    option_ids: List[int]
+    option_ids: List[Optional[int]]
     predicted_card_name: str
     predicted_card_id: Optional[int]
 
@@ -87,7 +87,6 @@ class AutomaticSampleCollector:
             blurred_embedding = self.encoder.encode_image(card_frame)
 
         session_id = f"q_{int(timestamp)}_{card_hash[:8]}"
-        valid_ids = [cid for cid in option_ids if cid is not None]
 
         self.pending_question = PendingQuestion(
             session_id=session_id,
@@ -96,7 +95,7 @@ class AutomaticSampleCollector:
             blurred_embedding=blurred_embedding.copy(),
             blur_hash=card_hash,
             option_names=list(option_names),
-            option_ids=valid_ids,
+            option_ids=list(option_ids),
             predicted_card_name=predicted_name,
             predicted_card_id=predicted_id
         )
@@ -113,16 +112,31 @@ class AutomaticSampleCollector:
         """
         Safely updates candidate options and IDs for the pending question
         (e.g. when OCR refreshes on a grid change) without overwriting
-        the original blurred image or blurred embedding.
+        the original blurred image or blurred embedding, preserving 4-slot positional mapping.
         """
         if not self.pending_question:
             return False
-        valid_ids = [cid for cid in option_ids if cid is not None]
         self.pending_question.option_names = list(option_names)
-        self.pending_question.option_ids = valid_ids
+        self.pending_question.option_ids = list(option_ids)
         logger.info(
-            "Updated pending question candidate options: %s (valid IDs: %s)",
-            self.pending_question.option_names, valid_ids
+            "Updated pending question candidate options: %s (IDs: %s)",
+            self.pending_question.option_names, self.pending_question.option_ids
+        )
+        return True
+
+    def invalidate_pending_candidates(self) -> bool:
+        """
+        Invalidates candidate options for the pending active question
+        when OCR is invalid or unavailable, ensuring stale candidates
+        are not retained while keeping the pending question session intact.
+        """
+        if not self.pending_question:
+            return False
+        self.pending_question.option_names = []
+        self.pending_question.option_ids = []
+        logger.info(
+            "Invalidated candidate options for pending question %s due to invalid OCR",
+            self.pending_question.session_id
         )
         return True
 

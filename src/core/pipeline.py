@@ -135,6 +135,7 @@ class QuizPipeline:
         4. If RESULT_REVEALED: execute ResultDetector + AdaptiveLearning for dual-verification learning.
         Returns (AnswerResult or None, CollectionReport or None).
         """
+        t0 = time.perf_counter()
         # 1. PerceptionEngine unified perception entry point
         p_frame: PerceptionFrame = self.perception_engine.perceive_frame()
         event: QuestionEvent = self.detector.process_frame_bundle(p_frame)
@@ -183,6 +184,9 @@ class QuizPipeline:
                 observation_count=1,
                 temporal_agreement=1.0
             )
+
+            if hasattr(self.perception_engine, "notify_inference_completed"):
+                self.perception_engine.notify_inference_completed(p_frame.card_hash, p_frame.card_sharpness)
 
             # Push initial snapshot to temporal analyzer
             reasoned_proxy = ReasonedAnswer(
@@ -241,19 +245,22 @@ class QuizPipeline:
             # Subsequent active-question frames: OCR synchronization & adaptive visual inference
             sid = self.context_analyzer.active_session.session_id if self.context_analyzer.active_session else self.current_session_id
 
-            # 1. OCR candidate synchronization on grid change
-            if p_frame.ocr_source == OCRSource.REFRESHED:
-                logger.info("Pipeline: PerceptionEngine signaled REFRESHED candidates; updating pipeline candidates.")
-                self.current_candidates = p_frame.ocr_candidates
-                # Safely update pending question candidate names and IDs in adaptive_learning without touching blurred image
-                if self.adaptive_learning and self.matcher:
-                    opt_names = [c.canonical_name for c in self.current_candidates if c.canonical_name]
-                    opt_ids = [self.matcher.find_card_index(name) for name in opt_names]
-                    opt_cids = [int(self.matcher.card_ids[idx]) if idx is not None else None for idx in opt_ids]
-                    self.adaptive_learning.update_pending_candidates(opt_names, opt_cids)
+            # 1. OCR candidate synchronization on grid change or recovery
+            if p_frame.ocr_source in (OCRSource.REFRESHED, OCRSource.NEWLY_EXTRACTED):
+                if p_frame.ocr_candidates and p_frame.ocr_candidates != self.current_candidates:
+                    logger.info("Pipeline: PerceptionEngine signaled %s candidates; updating pipeline candidates.", p_frame.ocr_source.value)
+                    self.current_candidates = list(p_frame.ocr_candidates)
+                    # Safely update pending question candidate names and IDs in adaptive_learning without touching blurred image
+                    if self.adaptive_learning and self.matcher:
+                        opt_names = [c.canonical_name for c in self.current_candidates if c.canonical_name]
+                        opt_ids = [self.matcher.find_card_index(name) for name in opt_names]
+                        opt_cids = [int(self.matcher.card_ids[idx]) if idx is not None else None for idx in opt_ids]
+                        self.adaptive_learning.update_pending_candidates(opt_names, opt_cids)
             elif p_frame.ocr_source == OCRSource.INVALID:
                 logger.warning("Pipeline: PerceptionEngine signaled INVALID OCR on grid change; invalidating stale candidates.")
                 self.current_candidates = []
+                if self.adaptive_learning:
+                    self.adaptive_learning.invalidate_pending_candidates()
 
             cands = self.current_candidates if (self.current_candidates and p_frame.ocr_source != OCRSource.INVALID) else (
                 p_frame.ocr_candidates if p_frame.ocr_source != OCRSource.INVALID else []
@@ -271,8 +278,9 @@ class QuizPipeline:
                     session_id=sid,
                     return_details=True
                 )
+                step_elapsed_ms = (time.perf_counter() - t0) * 1000.0
                 if obs_count < 2 or stab_ans is None:
-                    logger.debug("Pipeline: Card artwork and options visually unchanged; skipping DINOv2 inference.")
+                    logger.debug("Pipeline: Card artwork and options visually unchanged; skipping DINOv2 inference (took %.2f ms).", step_elapsed_ms)
                     return self.last_result, None
 
                 # Temporal observations already exist (>=2); evaluate stabilization without re-running DINOv2
@@ -312,7 +320,7 @@ class QuizPipeline:
                     candidates=[c.canonical_name for c in cands if c.canonical_name],
                     alternatives=stab_ans.raw_match.get("alternatives", []),
                     explanation=f"{verdict.explanation} (Obs: {obs_count}, Agreement: {agreement_ratio*100:.0f}%)",
-                    processing_time_ms=0.5,
+                    processing_time_ms=round(step_elapsed_ms, 2),
                     button_slot=stab_ans.slot_index,
                     runner_up_name=stab_ans.runner_up_name,
                     runner_up_score=stab_ans.runner_up_score,
@@ -333,6 +341,9 @@ class QuizPipeline:
                     ocr_candidates=cands,
                     prediction_stage="STABILIZING"
                 )
+
+                if hasattr(self.perception_engine, "notify_inference_completed"):
+                    self.perception_engine.notify_inference_completed(p_frame.card_hash, p_frame.card_sharpness)
 
                 frame_proxy = ReasonedAnswer(
                     card_name=frame_result.card_name,
@@ -531,4 +542,7 @@ class QuizPipeline:
         self.temporal_analyzer.reset()
         if hasattr(self.perception_engine, "reset_cache"):
             self.perception_engine.reset_cache()
+        if self.adaptive_learning and hasattr(self.adaptive_learning, "collector"):
+            self.adaptive_learning.collector.pending_question = None
+            self.adaptive_learning.collector.last_learned_session = None
 

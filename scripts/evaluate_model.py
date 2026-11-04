@@ -564,6 +564,7 @@ def benchmark_mode_a_replay(cards, num_questions: int = 20):
         "top1_accuracy_percent": top1_acc,
         "top2_accuracy_percent": top2_acc,
         "uncertain_rate_percent": unc_rate,
+        "wrong_match_rate_percent": fp_rate,
         "false_positive_rate_percent": fp_rate,
         "avg_temporal_agreement": round(float(np.mean(temporal_agreements)), 3) if temporal_agreements else 1.0,
         "timing_breakdown": {

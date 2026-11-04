@@ -72,6 +72,8 @@ class PerceptionEngine:
         self._cached_candidates: List[CandidateOption] = []
         self._last_card_hash: Optional[str] = None
         self._last_card_sharpness: float = 0.0
+        self._last_inference_card_hash: Optional[str] = None
+        self._last_inference_sharpness: float = 0.0
 
     @staticmethod
     def compute_options_hash(options_frame: Optional[np.ndarray]) -> str:
@@ -106,6 +108,16 @@ class PerceptionEngine:
         self._cached_candidates = []
         self._last_card_hash = None
         self._last_card_sharpness = 0.0
+        self._last_inference_card_hash = None
+        self._last_inference_sharpness = 0.0
+
+    def notify_inference_completed(self, card_hash: str, sharpness: float):
+        """
+        Notifies PerceptionEngine that visual inference was completed for the
+        specified card frame, establishing a new baseline for gradual change detection.
+        """
+        self._last_inference_card_hash = card_hash
+        self._last_inference_sharpness = sharpness
 
     def perceive_frame(
         self,
@@ -131,13 +143,13 @@ class PerceptionEngine:
         sharpness = compute_image_sharpness(card_frame) if card_frame is not None else 0.0
         is_unblurred = sharpness >= self.sharpness_threshold
 
-        # Compute card hash and determine whether card region materially changed
+        # Compute card hash and determine whether card region materially changed relative to last inference baseline
         card_hash = self.compute_card_hash(card_frame)
-        if self._last_card_hash is None:
+        if self._last_inference_card_hash is None:
             has_card_changed = True
         else:
-            card_dist = self.hash_distance(card_hash, self._last_card_hash)
-            sharp_delta = abs(sharpness - self._last_card_sharpness)
+            card_dist = self.hash_distance(card_hash, self._last_inference_card_hash)
+            sharp_delta = abs(sharpness - self._last_inference_sharpness)
             has_card_changed = (card_dist > 3 or sharp_delta > 15.0)
 
         if card_frame is not None and card_frame.size > 0:

@@ -162,11 +162,12 @@ Evaluated across four distinct independent groups and a live `QuizPipeline.step(
 | Evaluation Mode / Group | Metric | Measured Result | Status |
 |---|---|---|---|
 | **Mode A: Replay Pipeline Benchmark** | Top-1 End-to-End Accuracy | **90.00%** (18/20) | ✅ PASSED |
+| | Wrong Match Rate | **0.00%** (0/20) | ✅ PASSED |
 | | False Positive Rate | **0.00%** (0/20) | ✅ PASSED |
 | | Uncertain Flagging Rate | **10.00%** (2/20) | ✅ CONSERVATIVE |
-| | Provisional Prediction Latency ($p_{50}$) | **77.62 ms** | ✅ PASSED (<100ms) |
-| | Provisional Prediction Latency ($p_{95}$) | **115.14 ms** | ✅ PASSED |
-| | Subsequent Frame Latency ($p_{50}$) | **29.37 ms** | ✅ OPTIMIZED (OCR Reuse & Adaptive Inference) |
+| | Provisional Prediction Latency ($p_{50}$) | **93.34 ms** | ✅ PASSED (<100ms) |
+| | Provisional Prediction Latency ($p_{95}$) | **151.84 ms** | ✅ PASSED |
+| | Subsequent Frame Latency ($p_{50}$) | **32.51 ms** | ✅ OPTIMIZED (OCR Reuse & Adaptive Inference) |
 | | Average Temporal Agreement | **1.00** | ✅ PASSED |
 | **1. Independent Synthetic Blurs** | Top-1 Accuracy across 7 Distortion Types | **100.00%** (210/210) | ✅ PASSED |
 | | Top-2 Accuracy | **100.00%** (210/210) | ✅ PASSED |
@@ -202,9 +203,9 @@ Run the full pytest suite:
 pytest -v
 ```
 
-Results: **74 passed in ~8.5s with zero warnings**
-- `tests/test_offline_mode.py` (12 tests): Cryptographic SHA256 verification, path traversal prevention, architecture mismatch detection, local safetensors checkpoint loading, file size & dimension checks, failure handling without network, no fallback to pretrained remote weights, embeddings metadata verification against NPZ, exact verified model checkpoint loading.
-- `tests/test_advanced_ai.py` (11 tests): Confidence engine multi-factor calibration, temporal voting & timer tracking, candidate reasoner candidate restriction rules, context state machine transitions, adaptive learning.
+Results: **80 passed in ~11s with zero warnings**
+- `tests/test_offline_mode.py` (15 tests): Cryptographic SHA256 verification, path traversal prevention, architecture mismatch detection, local safetensors checkpoint loading, file size & dimension checks, failure handling without network, no fallback to pretrained remote weights, embeddings metadata verification against NPZ, exact verified model checkpoint loading, missing required metadata fields, missing metadata file rejection, strict offline network socket blocking.
+- `tests/test_advanced_ai.py` (14 tests): Confidence engine multi-factor calibration, temporal voting & timer tracking, candidate reasoner candidate restriction rules, context state machine transitions, adaptive learning, gradual unblurring inference triggers across frames, 4-slot quadrant positional integrity with None IDs, OCR invalidation and recovery state synchronization.
 - `tests/test_capture_window.py` (8 tests): Display enumeration, frame capture, Quartz window movement, window resize, multi-monitor and negative coordinates, permission checks.
 - `tests/test_dataset.py` (4 tests): 286 card records, non-empty files, SQLite schema consistency.
 - `tests/test_recognition.py` (5 tests): DINOv2 embedding dimensionality, L2 normalization, independent image queries, non-cached blur transformations, margin evaluation.
