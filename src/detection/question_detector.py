@@ -137,7 +137,8 @@ class QuestionDetector:
             if 0.012 <= edge_density <= 0.45:
                 valid_btn_count += 1
 
-        if valid_btn_count < 4:
+        # Require at least 2 buttons with valid structure (avoids rejecting questions where 1 or 2 buttons have shorter text)
+        if valid_btn_count < 2:
             return False
 
         return True

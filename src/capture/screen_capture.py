@@ -84,6 +84,35 @@ class ScreenCapture:
         bgra = np.array(raw)
         return cv2.cvtColor(bgra, cv2.COLOR_BGRA2BGR)
 
+    def capture_game_window(self, window_id: int, fallback_rect: RectRegion) -> np.ndarray:
+        """
+        Directly captures the target window from macOS WindowServer using Quartz.
+        This provides perfect pixel capture without occlusion from floating overlays,
+        IDE windows, or other desktop elements.
+        Falls back to display screen grab if Quartz is unavailable, fails, or window_id is 0.
+        """
+        if window_id > 0:
+            try:
+                import Quartz
+                image_ref = Quartz.CGWindowListCreateImage(
+                    Quartz.CGRectNull,
+                    Quartz.kCGWindowListOptionIncludingWindow,
+                    window_id,
+                    Quartz.kCGWindowImageBoundsIgnoreFraming | Quartz.kCGWindowImageNominalResolution
+                )
+                if image_ref is not None:
+                    w = Quartz.CGImageGetWidth(image_ref)
+                    h = Quartz.CGImageGetHeight(image_ref)
+                    if w > 100 and h > 100:
+                        bytes_per_row = Quartz.CGImageGetBytesPerRow(image_ref)
+                        data_provider = Quartz.CGImageGetDataProvider(image_ref)
+                        data = Quartz.CGDataProviderCopyData(data_provider)
+                        arr = np.frombuffer(data, dtype=np.uint8).reshape((h, bytes_per_row // 4, 4))
+                        return cv2.cvtColor(arr[:, :w, :3], cv2.COLOR_RGBA2BGR)
+            except Exception as e:
+                logger.debug("Quartz direct window capture failed: %s", e)
+        return self.capture_rect(fallback_rect)
+
     @staticmethod
     def extract_four_buttons(
         options_frame: np.ndarray
@@ -218,7 +247,7 @@ class ScreenCapture:
 
         resolved = self.game_locator.locate_game()
         game_rect = resolved.game_rect
-        game_frame = self.capture_rect(game_rect)
+        game_frame = self.capture_game_window(getattr(resolved, "target_window_id", 0), game_rect)
 
         # Slice card artwork and options from game_frame using relative coordinates
         gh, gw = game_frame.shape[:2]

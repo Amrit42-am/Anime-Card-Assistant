@@ -27,6 +27,7 @@ class ResolvedGameRegions:
     button_rects: List[RectRegion]  # 0: TL, 1: TR, 2: BL, 3: BR
     is_auto_tracked: bool
     source_window_title: str
+    target_window_id: int = 0
 
 
 class GameLocator:
@@ -54,10 +55,12 @@ class GameLocator:
         window = self.window_tracker.track()
         cfg = self.calibration
 
+        target_win_id = 0
         if window is not None and window.width > 300 and window.height > 200:
             self.is_auto_tracked = True
             game_rect = RectRegion(x=window.x, y=window.y, w=window.width, h=window.height)
             title = f"{window.owner_name} - {window.window_name}"
+            target_win_id = window.window_id
         else:
             self.is_auto_tracked = False
             game_rect = cfg.game_window
@@ -149,6 +152,7 @@ class GameLocator:
             banner_rect=banner_rect,
             button_rects=[tl, tr, bl, br],
             is_auto_tracked=self.is_auto_tracked,
-            source_window_title=title
+            source_window_title=title,
+            target_window_id=target_win_id
         )
 

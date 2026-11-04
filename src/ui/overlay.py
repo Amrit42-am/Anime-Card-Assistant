@@ -392,10 +392,15 @@ class FloatingOverlay(QWidget):
         self.last_result = result
         self.auto_learn_banner.setVisible(False)
 
-        # Distinguish WAITING FOR OPTIONS from actual ambiguous matches
+        # Distinguish WAITING FOR OPTIONS from actual matches
         conf_lvl = getattr(result, "confidence_level", "UNCERTAIN")
-        if "WAITING" in conf_lvl or "OCR" in conf_lvl or result.card_name.startswith("Waiting"):
-            self.state_label.setText(conf_lvl)
+        is_generic_waiting = (
+            not result.card_name or
+            result.card_name.lower().strip() in ("waiting for quiz...", "waiting for valid options...")
+        )
+
+        if is_generic_waiting:
+            self.state_label.setText(conf_lvl if conf_lvl else "WAITING FOR VALID OPTIONS")
             self.state_label.setStyleSheet("color: #38bdf8; font-weight: bold;")
             self.card_name_label.setText("WAITING FOR VALID OPTIONS...")
             self.card_name_label.setStyleSheet("font-size: 15px; font-weight: 700; color: #94a3b8; padding: 4px 0;")
@@ -407,10 +412,15 @@ class FloatingOverlay(QWidget):
             self.update_candidates_display(result)
             return
 
-        self.state_label.setText("UNCERTAIN MATCH")
-        self.state_label.setStyleSheet("color: #f59e0b; font-weight: bold;")
+        # Provisional visual guess available: always display AI guess even if options are resolving!
+        if "WAITING" in conf_lvl or "OCR" in conf_lvl:
+            self.state_label.setText("PROVISIONAL VISUAL GUESS")
+            self.state_label.setStyleSheet("color: #38bdf8; font-weight: bold;")
+        else:
+            self.state_label.setText("UNCERTAIN MATCH")
+            self.state_label.setStyleSheet("color: #f59e0b; font-weight: bold;")
 
-        self.card_name_label.setText(f"{result.card_name} ?")
+        self.card_name_label.setText(f"{result.card_name.upper()} ?")
         self.card_name_label.setStyleSheet("font-size: 20px; font-weight: 800; color: #fbbf24; padding: 4px 0;")
 
         slot_names = ["TOP-LEFT [TL]", "TOP-RIGHT [TR]", "BOTTOM-LEFT [BL]", "BOTTOM-RIGHT [BR]"]
@@ -424,12 +434,12 @@ class FloatingOverlay(QWidget):
             score_str = f" ({result.runner_up_score:.2f})" if result.runner_up_score else ""
             self.runner_up_label.setText(f"Runner-up: {result.runner_up_name}{score_str} | Margin: +{result.margin:.2f}")
         else:
-            self.runner_up_label.setText(f"Margin: +{result.margin:.2f}")
+            self.runner_up_label.setText(result.explanation or f"Margin: +{result.margin:.2f}")
 
-        self.conf_badge.set_confidence(result.confidence, "UNCERTAIN")
+        display_conf = result.confidence if result.confidence > 0 else 0.40
+        self.conf_badge.set_confidence(display_conf, "PROVISIONAL" if "WAITING" in conf_lvl else "UNCERTAIN")
         self.source_badge.set_source(result.matched_from)
         self.latency_label.setText(f"Latency: {result.processing_time_ms:.0f} ms")
-
         self.update_candidates_display(result)
 
     def on_auto_learned(self, report):

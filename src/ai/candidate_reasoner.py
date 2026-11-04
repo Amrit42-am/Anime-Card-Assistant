@@ -167,9 +167,9 @@ class CandidateReasoner:
                 assigned_slot = best_slot
 
         # Slot assignment & candidate restriction verification:
-        # If fewer than 4 distinct candidates resolved, never produce a confirmed answer or slot!
+        # If fewer than 4 distinct candidates resolved, provide a provisional visual guess,
+        # but NEVER mark as confident or final matched!
         if not is_constrained:
-            assigned_slot = None
             is_confident = False
             status = "uncertain"
             slot_labels = ["TL", "TR", "BL", "BR"]
@@ -179,9 +179,9 @@ class CandidateReasoner:
             ]
             failed_str = f" (unresolved: {', '.join(failed_slots)})" if failed_slots else ""
             confidence_level = "WAITING FOR VALID OPTIONS" if not ocr_candidates else "OCR RECOVERY"
-            explanation = f"Waiting for valid options: {len(unique_ids)}/4 distinct options resolved{failed_str}"
-            display_card_name = "Waiting for valid options..."
-            calibrated_conf = 0.0
+            explanation = f"Provisional visual match: {top_name} ({len(unique_ids)}/4 distinct options resolved{failed_str})"
+            display_card_name = top_name
+            calibrated_conf = min(verdict.calibrated_confidence, 0.45) if verdict.calibrated_confidence > 0 else 0.35
         elif assigned_slot is None:
             is_confident = False
             status = "uncertain"
@@ -201,7 +201,7 @@ class CandidateReasoner:
 
         return ReasonedAnswer(
             card_name=display_card_name,
-            card_id=top_id if is_constrained else None,
+            card_id=top_id,
             slot_index=assigned_slot,
             confidence=calibrated_conf,
             confidence_level=confidence_level,
