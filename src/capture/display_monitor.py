@@ -93,15 +93,28 @@ class DisplayMonitor:
         if QUARTZ_AVAILABLE:
             try:
                 screens = AppKit.NSScreen.screens()
+                screen_scale_map = {}
+                for s in screens:
+                    try:
+                        desc = s.deviceDescription()
+                        screen_num = desc.objectForKey_("NSScreenNumber")
+                        if screen_num is not None:
+                            screen_scale_map[int(screen_num)] = float(s.backingScaleFactor())
+                    except Exception:
+                        pass
+
                 max_displays = 16
                 err, active_displays, count = Quartz.CGGetActiveDisplayList(max_displays, None, None)
                 if err == 0 and count > 0:
                     main_id = Quartz.CGMainDisplayID()
                     for idx, disp_id in enumerate(active_displays):
                         bounds = Quartz.CGDisplayBounds(disp_id)
-                        scale = 1.0
-                        if idx < len(screens):
-                            scale = float(screens[idx].backingScaleFactor())
+                        scale = screen_scale_map.get(int(disp_id), 1.0)
+                        if scale == 1.0 and idx < len(screens):
+                            try:
+                                scale = float(screens[idx].backingScaleFactor())
+                            except Exception:
+                                pass
                         
                         is_primary = (disp_id == main_id)
                         disp_info = DisplayInfo(

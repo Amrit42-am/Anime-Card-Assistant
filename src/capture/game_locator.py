@@ -104,35 +104,41 @@ class GameLocator:
             h=int(b_rel.rh * gh)
         )
 
-        # Compute 2x2 Button Rects (TL, TR, BL, BR)
-        half_w = options_rect.w // 2
-        half_h = options_rect.h // 2
-        pad_x = 4
-        pad_y = 4
+        # Compute 2x2 Button Rects (TL, TR, BL, BR) with banner offset & gaps
+        banner_offset_y = int(0.16 * options_rect.h)
+        margin_bottom = int(0.03 * options_rect.h)
+        margin_x = int(0.03 * options_rect.w)
+        gap_x = int(0.04 * options_rect.w)
+        gap_y = int(0.05 * options_rect.h)
+
+        usable_w = max(20, options_rect.w - 2 * margin_x - gap_x)
+        usable_h = max(20, options_rect.h - banner_offset_y - margin_bottom - gap_y)
+        btn_w = usable_w // 2
+        btn_h = usable_h // 2
 
         tl = RectRegion(
-            x=options_rect.x + pad_x,
-            y=options_rect.y + pad_y,
-            w=half_w - 2 * pad_x,
-            h=half_h - 2 * pad_y
+            x=options_rect.x + margin_x,
+            y=options_rect.y + banner_offset_y,
+            w=btn_w,
+            h=btn_h
         )
         tr = RectRegion(
-            x=options_rect.x + half_w + pad_x,
-            y=options_rect.y + pad_y,
-            w=half_w - 2 * pad_x,
-            h=half_h - 2 * pad_y
+            x=options_rect.x + margin_x + btn_w + gap_x,
+            y=options_rect.y + banner_offset_y,
+            w=btn_w,
+            h=btn_h
         )
         bl = RectRegion(
-            x=options_rect.x + pad_x,
-            y=options_rect.y + half_h + pad_y,
-            w=half_w - 2 * pad_x,
-            h=half_h - 2 * pad_y
+            x=options_rect.x + margin_x,
+            y=options_rect.y + banner_offset_y + btn_h + gap_y,
+            w=btn_w,
+            h=btn_h
         )
         br = RectRegion(
-            x=options_rect.x + half_w + pad_x,
-            y=options_rect.y + half_h + pad_y,
-            w=half_w - 2 * pad_x,
-            h=half_h - 2 * pad_y
+            x=options_rect.x + margin_x + btn_w + gap_x,
+            y=options_rect.y + banner_offset_y + btn_h + gap_y,
+            w=btn_w,
+            h=btn_h
         )
 
         return ResolvedGameRegions(

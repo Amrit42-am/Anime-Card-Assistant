@@ -125,12 +125,28 @@ def get_correct_option(
     else:
         best_slot, highest_green = qualifying_green[0]
 
-    # 3. OCR the text inside the green button
+    # 3. OCR the text inside the green button with full fallback and retry
     green_frame = button_frames[best_slot]
     preprocessed = option_reader.preprocess_button_image(green_frame)
     vision_results = option_reader.extract_text_vision(preprocessed)
 
+    # Retry on raw green button crop if preprocessed text is empty
+    if not vision_results and green_frame is not None and green_frame.size > 0:
+        vision_results = option_reader.extract_text_vision(green_frame)
+
+    # Retry with aggressive preprocessing if still empty
+    if not vision_results and green_frame is not None and green_frame.size > 0:
+        retry_img = option_reader.retry_preprocess_button_image(green_frame)
+        vision_results = option_reader.extract_text_vision(retry_img)
+
+    # Fallback to local pytesseract if Apple Vision returns nothing
     if not vision_results:
+        vision_results = option_reader.extract_text_fallback(preprocessed)
+    if not vision_results and green_frame is not None and green_frame.size > 0:
+        vision_results = option_reader.extract_text_fallback(green_frame)
+
+    if not vision_results:
+        logger.debug("Green button OCR produced no text across Apple Vision and Tesseract fallbacks.")
         return None
 
     vision_results.sort(key=lambda item: item[2])

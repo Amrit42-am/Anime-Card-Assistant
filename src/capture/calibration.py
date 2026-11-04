@@ -59,19 +59,19 @@ class CalibrationDialog(QDialog):
         gw_grid = QGridLayout(gw_box)
 
         self.spin_gx = QSpinBox()
-        self.spin_gx.setRange(0, 3840)
+        self.spin_gx.setRange(-10000, 10000)
         self.spin_gx.setValue(self.config.game_window.x)
 
         self.spin_gy = QSpinBox()
-        self.spin_gy.setRange(0, 2160)
+        self.spin_gy.setRange(-10000, 10000)
         self.spin_gy.setValue(self.config.game_window.y)
 
         self.spin_gw = QSpinBox()
-        self.spin_gw.setRange(200, 3840)
+        self.spin_gw.setRange(100, 10000)
         self.spin_gw.setValue(self.config.game_window.w)
 
         self.spin_gh = QSpinBox()
-        self.spin_gh.setRange(200, 2160)
+        self.spin_gh.setRange(100, 10000)
         self.spin_gh.setValue(self.config.game_window.h)
 
         gw_grid.addWidget(QLabel("X:"), 0, 0)

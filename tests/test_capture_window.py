@@ -173,3 +173,84 @@ def test_screen_capture_permission_denied(monkeypatch):
     assert ScreenCapture.check_permissions() is False
 
 
+def test_browser_hosted_roblox_window_detection(monkeypatch):
+    """Verify WindowTracker detects browser-hosted Roblox and prioritizes native RobloxPlayer."""
+    import Quartz
+
+    mock_windows = [
+        # Unrelated window
+        {
+            Quartz.kCGWindowOwnerName: "Finder",
+            Quartz.kCGWindowName: "Desktop",
+            Quartz.kCGWindowBounds: {"X": 0, "Y": 0, "Width": 1512, "Height": 982},
+            Quartz.kCGWindowLayer: 0,
+            Quartz.kCGWindowIsOnscreen: True,
+            Quartz.kCGWindowOwnerPID: 9999,
+            Quartz.kCGWindowNumber: 101
+        },
+        # Browser-hosted Roblox
+        {
+            Quartz.kCGWindowOwnerName: "Google Chrome",
+            Quartz.kCGWindowName: "Anime Card Clash - Roblox",
+            Quartz.kCGWindowBounds: {"X": 0, "Y": 50, "Width": 750, "Height": 900},
+            Quartz.kCGWindowLayer: 0,
+            Quartz.kCGWindowIsOnscreen: True,
+            Quartz.kCGWindowOwnerPID: 9998,
+            Quartz.kCGWindowNumber: 102
+        }
+    ]
+
+    monkeypatch.setattr(Quartz, "CGWindowListCopyWindowInfo", lambda *args: mock_windows)
+
+    tracker = WindowTracker()
+    target = tracker.find_target_window()
+    assert target is not None
+    assert target.owner_name == "Google Chrome"
+    assert target.width == 750
+    assert target.height == 900
+
+    # Now add native RobloxPlayer: it must be prioritized over the browser window
+    mock_windows.append({
+        Quartz.kCGWindowOwnerName: "RobloxPlayer",
+        Quartz.kCGWindowName: "Roblox",
+        Quartz.kCGWindowBounds: {"X": 0, "Y": 0, "Width": 750, "Height": 900},
+        Quartz.kCGWindowLayer: 0,
+        Quartz.kCGWindowIsOnscreen: True,
+        Quartz.kCGWindowOwnerPID: 9997,
+        Quartz.kCGWindowNumber: 103
+    })
+
+    target_native = tracker.find_target_window()
+    assert target_native is not None
+    assert target_native.owner_name == "RobloxPlayer"
+
+
+def test_roblox_split_screen_left_half_tracking():
+    """Verify Roblox window occupying left half of screen (x=0, w=750) coordinates."""
+    cfg = CalibrationConfig(
+        game_window=RectRegion(0, 0, 800, 600),
+        card_region=RelRegion(0.08, 0.22, 0.45, 0.68),
+        options_region=RelRegion(0.55, 0.25, 0.40, 0.65),
+        timer_region=RelRegion(0.30, 0.08, 0.40, 0.12)
+    )
+
+    class MockTracker(WindowTracker):
+        def track(self):
+            return WindowInfo(
+                window_id=1, owner_name="RobloxPlayer", window_name="Roblox",
+                x=0, y=50, width=750, height=900, is_on_screen=True
+            )
+
+    locator = GameLocator(calibration=cfg, window_tracker=MockTracker())
+    resolved = locator.locate_game()
+    assert resolved.is_auto_tracked is True
+    assert resolved.game_rect.x == 0
+    assert resolved.game_rect.y == 50
+    assert resolved.game_rect.w == 750
+    assert resolved.game_rect.h == 900
+
+    # Ensure options rect is in the right half of the game window
+    assert resolved.options_rect.x > resolved.card_rect.x
+    assert len(resolved.button_rects) == 4
+
+

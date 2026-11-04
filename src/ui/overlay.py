@@ -402,7 +402,7 @@ class FloatingOverlay(QWidget):
             self.slot_badge.setVisible(False)
             self.conf_badge.set_confidence(0.0, conf_lvl)
             self.source_badge.set_source("ocr_scanning")
-            self.runner_up_label.setText("Resolving 4 answer button options...")
+            self.runner_up_label.setText(result.explanation or "Resolving 4 answer button options...")
             self.latency_label.setText(f"Latency: {result.processing_time_ms:.0f} ms")
             self.update_candidates_display(result)
             return

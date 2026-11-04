@@ -207,17 +207,25 @@ class OptionReader:
 
     def clean_text(self, text: str) -> str:
         """Strips noise, button numbers, hotkey letters, and stray punctuation."""
+        # Replace newlines with spaces
+        text = text.replace("\n", " ").replace("\r", " ")
         # Strip leading punctuation/bullets/spaces
         text = re.sub(r"^[\s\-\*\•\>\:\.\,]+", "", text)
-        # Strip leading option markers like '1. ', 'A) ', '[B] ', '4: '
-        text = re.sub(r"^(?:\[?[0-9A-Da-d][\.\)\:\-\]]|\([0-9A-Da-d]\))\s*", "", text)
+        # Strip leading option markers like '1. ', 'A) ', '[B] ', '4: ', '[TL] ', 'TL: '
+        text = re.sub(r"^(?:\[[0-9A-Za-z]+\]|\([0-9A-Za-z]+\)|[0-9A-Za-z]{1,2}[\.\)\:\-])\s*", "", text)
         # Normalize whitespace
         text = re.sub(r"\s+", " ", text).strip()
         return text
 
-    def resolve_canonical_name(self, raw_text: str, threshold: float = 65.0) -> Tuple[str, Optional[int], float]:
+    def resolve_canonical_name(
+        self,
+        raw_text: str,
+        threshold: float = 65.0,
+        min_margin: float = 4.0
+    ) -> Tuple[str, Optional[int], float]:
         """
         Fuzzy matches extracted text to canonical card names.
+        Enforces threshold and winning margin to prevent assigning arbitrary closest match.
         Returns (canonical_name, card_id, score).
         """
         clean = self.clean_text(raw_text)
@@ -230,17 +238,22 @@ class OptionReader:
                 if name.lower() == lower_clean:
                     return name, self.name_to_id[lower_clean], 100.0
 
-        best = process.extractOne(
+        top_matches = process.extract(
             clean,
             self.canonical_names,
-            scorer=fuzz.token_sort_ratio
+            scorer=fuzz.token_sort_ratio,
+            limit=2
         )
-        if best and best[1] >= threshold:
-            canonical_name, score, _ = best
-            card_id = self.name_to_id.get(canonical_name.lower().strip())
-            return canonical_name, card_id, float(score)
+        if top_matches:
+            best_name, best_score, _ = top_matches[0]
+            second_score = top_matches[1][1] if len(top_matches) > 1 else 0.0
 
-        return clean, None, float(best[1]) if best else 0.0
+            # Require threshold AND winning margin over runner-up (unless score is very high >= 85.0)
+            if best_score >= threshold and (best_score >= 85.0 or (best_score - second_score) >= min_margin):
+                card_id = self.name_to_id.get(best_name.lower().strip())
+                return best_name, card_id, float(best_score)
+
+        return clean, None, float(top_matches[0][1]) if top_matches else 0.0
 
     def read_options_from_buttons(
         self,
@@ -268,7 +281,8 @@ class OptionReader:
             # Fallback to pytesseract when Vision yields no results and tesseract executable exists
             if not vision_results:
                 vision_results = self.extract_text_fallback(preprocessed)
-
+            if not vision_results and btn is not None and btn.size > 0:
+                vision_results = self.extract_text_fallback(btn)
 
             if vision_results:
                 # Sort lines top-to-bottom
@@ -296,19 +310,14 @@ class OptionReader:
 
     def read_options_from_panel(self, options_panel: np.ndarray) -> List[CandidateOption]:
         """
-        Reads candidate names from the combined options panel by either
-        splitting into 4 vertical button slots or analyzing text bounding boxes.
+        Reads candidate names from the combined options panel using accurate
+        2x2 button grid extraction (TL, TR, BL, BR), never horizontal strip splitting.
         """
         if options_panel is None or options_panel.size == 0:
             return []
 
-        h, w = options_panel.shape[:2]
-        slot_h = h // 4
-        button_frames = []
-        for i in range(4):
-            y1 = i * slot_h
-            y2 = (i + 1) * slot_h if i < 3 else h
-            btn = options_panel[y1 + 2:y2 - 2, 4:w - 4]
-            button_frames.append(btn)
-
+        from src.capture.screen_capture import ScreenCapture
+        button_frames, _, _ = ScreenCapture.extract_four_buttons(options_panel)
+        if not button_frames or len(button_frames) != 4:
+            return []
         return self.read_options_from_buttons(button_frames)

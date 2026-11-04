@@ -81,23 +81,15 @@ class CandidateReasoner:
         unique_ids = set(c.card_id for c in valid_candidates)
         has_four_distinct = (len(valid_candidates) == 4 and len(unique_ids) == 4)
 
-        # Retry with aggressive preprocessing if < 4 distinct options and button frames are available
-        if not has_four_distinct and button_frames and len(button_frames) == 4:
-            retry_candidates = self.option_reader.read_options_from_buttons(button_frames, use_retry=True)
-            retry_valid = [
-                c for c in retry_candidates
+        # Standalone invocation fallback: only read buttons if candidates were not provided
+        if not ocr_candidates and button_frames and len(button_frames) == 4:
+            ocr_candidates = self.option_reader.read_options_from_buttons(button_frames, use_retry=False)
+            valid_candidates = [
+                c for c in ocr_candidates
                 if c.is_valid and c.canonical_name and c.card_id is not None
             ]
-            retry_unique_ids = set(c.card_id for c in retry_valid)
-            if len(retry_valid) == 4 and len(retry_unique_ids) == 4:
-                ocr_candidates = retry_candidates
-                valid_candidates = retry_valid
-                unique_ids = retry_unique_ids
-                has_four_distinct = True
-            elif len(retry_valid) > len(valid_candidates):
-                ocr_candidates = retry_candidates
-                valid_candidates = retry_valid
-                unique_ids = retry_unique_ids
+            unique_ids = set(c.card_id for c in valid_candidates)
+            has_four_distinct = (len(valid_candidates) == 4 and len(unique_ids) == 4)
 
         # Candidate restriction rule: strictly require 4 distinct resolved candidates
         # to restrict visual matching. Otherwise, fall back to controlled full database matching.
@@ -180,8 +172,14 @@ class CandidateReasoner:
             assigned_slot = None
             is_confident = False
             status = "uncertain"
-            confidence_level = "WAITING FOR VALID OPTIONS" if not button_frames else "OCR RECOVERY"
-            explanation = f"Waiting for valid options: only {len(unique_ids)}/4 distinct options resolved by OCR"
+            slot_labels = ["TL", "TR", "BL", "BR"]
+            failed_slots = [
+                slot_labels[i] for i in range(4)
+                if not any(c.slot_index == i and c.is_valid and c.card_id is not None for c in ocr_candidates)
+            ]
+            failed_str = f" (unresolved: {', '.join(failed_slots)})" if failed_slots else ""
+            confidence_level = "WAITING FOR VALID OPTIONS" if not ocr_candidates else "OCR RECOVERY"
+            explanation = f"Waiting for valid options: {len(unique_ids)}/4 distinct options resolved{failed_str}"
             display_card_name = "Waiting for valid options..."
             calibrated_conf = 0.0
         elif assigned_slot is None:

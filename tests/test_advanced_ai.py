@@ -494,4 +494,125 @@ def test_overlay_window_flags_and_visibility():
     overlay.close()
 
 
+def test_context_analyzer_question_lasting_longer_than_four_seconds_does_not_restart_session():
+    """Verify that an active question visible for > 4.0s does NOT restart session."""
+    ctx = ContextAnalyzer(session_timeout=15.0)
+    t0 = 1000.0
+
+    # Start question at t0
+    ctx.evaluate_transition(
+        is_active_question=True,
+        is_result_screen=False,
+        card_hash="hash_card_alpha",
+        options=["Green Bomber", "Harmonious Soul", "Shadow Duelist", "Soul King"],
+        timestamp=t0
+    )
+    initial_sid = ctx.current_session_id
+    assert initial_sid is not None
+
+    # Emit a prediction
+    ctx.mark_predicted("Green Bomber", 0)
+
+    # Question remains on screen at t0 + 4.5s (timer ticking down)
+    ctx.evaluate_transition(
+        is_active_question=True,
+        is_result_screen=False,
+        card_hash="hash_card_alpha",
+        options=["Green Bomber", "Harmonious Soul", "Shadow Duelist", "Soul King"],
+        timestamp=t0 + 4.5
+    )
+    # Session ID must remain strictly identical!
+    assert ctx.current_session_id == initial_sid
+
+    # Question still on screen at t0 + 5.5s
+    ctx.evaluate_transition(
+        is_active_question=True,
+        is_result_screen=False,
+        card_hash="hash_card_alpha",
+        options=["Green Bomber", "Harmonious Soul", "Shadow Duelist", "Soul King"],
+        timestamp=t0 + 5.5
+    )
+    assert ctx.current_session_id == initial_sid
+
+
+def test_context_analyzer_ocr_failure_does_not_mark_predicted():
+    """Verify that unsuccessful prediction attempts do not mark session as predicted."""
+    ctx = ContextAnalyzer(session_timeout=15.0)
+    t0 = 2000.0
+
+    ctx.evaluate_transition(
+        is_active_question=True,
+        is_result_screen=False,
+        card_hash="hash_card_beta",
+        options=[],
+        timestamp=t0
+    )
+    assert ctx.active_session is not None
+    assert ctx.active_session.has_predicted is False
+
+    # Attempt to mark with waiting status (OCR failed)
+    ctx.mark_predicted("Waiting for valid options...", None)
+    assert ctx.active_session.has_predicted is False
+    assert ctx.should_predict() is True
+
+    # Mark with valid card name and slot
+    ctx.mark_predicted("Green Bomber", 1)
+    assert ctx.active_session.has_predicted is True
+    assert ctx.should_predict() is False
+
+
+def test_read_options_from_panel_uses_2x2_not_horizontal_strip():
+    """Verify that read_options_from_panel extracts 2x2 buttons without horizontal strip splitting."""
+    reader = OptionReader()
+
+    # Create mock 2x2 panel: 400 wide, 300 high
+    panel = np.ones((300, 400, 3), dtype=np.uint8) * 40
+    # Top-Left button
+    cv2.rectangle(panel, (20, 60), (180, 150), (120, 120, 120), -1)
+    cv2.putText(panel, "Green Bomber", (30, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+    # Top-Right button
+    cv2.rectangle(panel, (220, 60), (380, 150), (120, 120, 120), -1)
+    cv2.putText(panel, "Soul King", (230, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+    # Bottom-Left button
+    cv2.rectangle(panel, (20, 180), (180, 270), (120, 120, 120), -1)
+    cv2.putText(panel, "Harmonious Soul", (25, 230), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+    # Bottom-Right button
+    cv2.rectangle(panel, (220, 180), (380, 270), (120, 120, 120), -1)
+    cv2.putText(panel, "Shadow Duelist", (225, 230), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+
+    cands = reader.read_options_from_panel(panel)
+    assert len(cands) == 4
+    # Ensure slots are 0, 1, 2, 3
+    assert [c.slot_index for c in cands] == [0, 1, 2, 3]
+
+
+def test_screen_capture_extract_four_buttons():
+    """Verify ScreenCapture.extract_four_buttons extracts 4 non-empty crops with correct slot geometry."""
+    from src.capture.screen_capture import ScreenCapture
+
+    # Options frame with header banner at top and 4 buttons in 2x2 grid
+    options_frame = np.ones((300, 400, 3), dtype=np.uint8) * 30
+    # Header banner
+    cv2.putText(options_frame, "Which character is this?", (50, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+    # 4 distinct buttons
+    cv2.rectangle(options_frame, (20, 60), (180, 160), (100, 140, 200), -1)
+    cv2.rectangle(options_frame, (220, 60), (380, 160), (100, 140, 200), -1)
+    cv2.rectangle(options_frame, (20, 180), (180, 280), (100, 140, 200), -1)
+    cv2.rectangle(options_frame, (220, 180), (380, 280), (100, 140, 200), -1)
+
+    crops, rects, is_auto = ScreenCapture.extract_four_buttons(options_frame)
+    assert len(crops) == 4
+    assert len(rects) == 4
+    for b in crops:
+        assert b.shape[0] > 15
+        assert b.shape[1] > 30
+
+    tl, tr, bl, br = rects
+    # Verify strict positional mapping
+    assert tl[0] < tr[0]  # TL is left of TR
+    assert bl[0] < br[0]  # BL is left of BR
+    assert tl[1] < bl[1]  # TL is above BL
+    assert tr[1] < br[1]  # TR is above BR
+
+
 

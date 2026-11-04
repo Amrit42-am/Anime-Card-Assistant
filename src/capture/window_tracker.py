@@ -39,6 +39,10 @@ class WindowTracker:
     """
 
     TARGET_OWNERS = ["RobloxPlayer", "Roblox", "RobloxStudio"]
+    BROWSER_OWNERS = [
+        "Google Chrome", "Chrome", "Brave Browser", "Brave",
+        "Safari", "Arc", "Microsoft Edge", "Firefox"
+    ]
 
     def __init__(self, target_owner: Optional[str] = None):
         self.target_owner = target_owner
@@ -72,7 +76,7 @@ class WindowTracker:
                 # Ignore windows from our own assistant process or with overlay titles
                 if win_pid == current_pid:
                     continue
-                if any(x in owner.lower() or x in name.lower() for x in ["anime card", "assistant overlay", "calibration"]):
+                if any(x in owner.lower() or x in name.lower() for x in ["anime card assistant", "assistant overlay", "calibration"]):
                     continue
 
                 # Ignore non-standard window layers (like menus, popups, and floating HUDs)
@@ -81,9 +85,19 @@ class WindowTracker:
 
                 is_match = False
                 if self.target_owner:
-                    is_match = (self.target_owner.lower() in owner.lower())
+                    is_match = (
+                        self.target_owner.lower() in owner.lower() or
+                        self.target_owner.lower() in name.lower()
+                    )
                 else:
-                    is_match = any(t.lower() in owner.lower() for t in self.TARGET_OWNERS)
+                    # Native Roblox Player / Studio
+                    is_native_roblox = any(t.lower() in owner.lower() for t in self.TARGET_OWNERS)
+                    # Browser-hosted Roblox
+                    is_browser_roblox = (
+                        any(b.lower() in owner.lower() for b in self.BROWSER_OWNERS) and
+                        any(g in name.lower() for g in ["roblox", "anime card clash"])
+                    )
+                    is_match = is_native_roblox or is_browser_roblox
 
                 if is_match and bounds_dict:
                     w = int(bounds_dict.get("Width", 0))
@@ -102,8 +116,14 @@ class WindowTracker:
                         ))
 
             if candidates:
-                # Select the largest window by area (main game viewport)
-                candidates.sort(key=lambda item: item.width * item.height, reverse=True)
+                # Prioritize native Roblox Player, then largest window by area (main game viewport)
+                candidates.sort(
+                    key=lambda item: (
+                        any(t.lower() in item.owner_name.lower() for t in self.TARGET_OWNERS),
+                        item.width * item.height
+                    ),
+                    reverse=True
+                )
                 self.last_known_window = candidates[0]
                 return self.last_known_window
 

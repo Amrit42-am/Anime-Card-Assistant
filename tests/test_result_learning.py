@@ -452,3 +452,34 @@ def test_lobby_and_world_screens_do_not_trigger_quiz():
     e_menu = detector.process_frame_bundle(menu_bundle)
     assert e_menu.question_detected is False
     assert detector.current_state == "IDLE"
+
+
+def test_result_detector_green_button_ocr_fallback(monkeypatch):
+    """Verify that get_correct_option falls back to raw button crop and retry when vision on preprocessed fails."""
+    from src.learning.result_detector import get_correct_option
+    from src.ocr.option_reader import OptionReader
+
+    reader = OptionReader()
+    green_btn = make_button_frame("Green Bomber", color_type="green")
+    neutral_btns = [make_button_frame("Soul King", color_type="neutral") for _ in range(3)]
+    buttons = [green_btn, neutral_btns[0], neutral_btns[1], neutral_btns[2]]
+
+    # Case 1: normal vision succeeds
+    res1 = get_correct_option(buttons, reader, candidate_names=["Green Bomber", "Soul King", "Shadow Duelist", "Harmonious Soul"])
+    assert res1 is not None
+    assert res1.correct_option == "Green Bomber"
+    assert res1.slot_index == 0
+
+    # Case 2: Vision fails on preprocessed, but succeeds on raw frame
+    original_vision = reader.extract_text_vision
+    call_count = [0]
+    def mock_vision(img, recognition_level=None):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return []  # Fail first (preprocessed) call
+        return original_vision(img, recognition_level=recognition_level)
+
+    monkeypatch.setattr(reader, "extract_text_vision", mock_vision)
+    res2 = get_correct_option(buttons, reader, candidate_names=["Green Bomber", "Soul King", "Shadow Duelist", "Harmonious Soul"])
+    assert res2 is not None
+    assert res2.correct_option == "Green Bomber"

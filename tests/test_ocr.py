@@ -89,7 +89,7 @@ def test_option_reader_tesseract_missing_no_error_spam(monkeypatch, reader, capl
 
 
 def test_diagnose_quiz_crops(tmp_path):
-    """Verify that ScreenCapture.diagnose_quiz_crops produces annotated screenshots and slot crops."""
+    """Verify that ScreenCapture.diagnose_quiz_crops produces annotated screenshots, numbered crops, and json logs."""
     from src.capture.screen_capture import ScreenCapture
     capture = ScreenCapture()
     diag_dir = tmp_path / "diag"
@@ -97,6 +97,46 @@ def test_diagnose_quiz_crops(tmp_path):
 
     assert "game_dimensions" in rep
     assert (diag_dir / "debug_screen_crops.png").exists()
+    assert (diag_dir / "04_annotated_regions.png").exists()
+    assert (diag_dir / "ocr_results.json").exists()
+    assert (diag_dir / "detection_results.json").exists()
     assert len(rep["crop_paths"]) == 4
     for cp in rep["crop_paths"]:
         assert Path(cp).exists()
+
+
+def test_option_reader_recording_card_names(reader):
+    """Verify resolution of canonical names from the gameplay recording."""
+    # Exact canonical matches
+    canon, cid, score = reader.resolve_canonical_name("White Flame Defender")
+    assert canon == "White Flame Defender"
+    assert cid is not None
+    assert score == 100.0
+
+    canon, cid, score = reader.resolve_canonical_name("Merged Beast")
+    assert canon == "Merged Beast"
+    assert cid is not None
+    assert score == 100.0
+
+    canon, cid, score = reader.resolve_canonical_name("Copy Ninja")
+    assert canon == "Copy Ninja"
+    assert cid is not None
+    assert score == 100.0
+
+    canon, cid, score = reader.resolve_canonical_name("Awakened Light Admiral")
+    assert canon == "Awakened Light Admiral"
+    assert cid is not None
+    assert score == 100.0
+
+    # In-game shorthand: 'Stark Gunner' resolves to canonical 'Awakened Stark Gunner'
+    canon, cid, score = reader.resolve_canonical_name("Stark Gunner")
+    assert canon == "Awakened Stark Gunner"
+    assert cid is not None
+    assert score > 70.0
+
+
+def test_option_reader_winning_margin_rejection(reader):
+    """Verify that gibberish or ambiguous text without winning margin is not accepted."""
+    # Completely random text
+    canon, cid, score = reader.resolve_canonical_name("XkL999_zzq")
+    assert cid is None

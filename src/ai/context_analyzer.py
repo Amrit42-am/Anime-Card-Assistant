@@ -53,6 +53,7 @@ class QuestionSession:
     predicted_slot: Optional[int] = None
     has_predicted: bool = False
     result_processed: bool = False
+    ocr_validated: bool = False
     attempts: int = 0
 
 
@@ -117,17 +118,34 @@ class ContextAnalyzer:
             # Detect new question round:
             # - No active session, OR
             # - Materially different card hash (Hamming distance > 8 bits, not minor unblurring), OR
+            # - Options list changed materially, OR
             # - Active session already had its result processed, OR
-            # - Minimum time elapsed (> 4.0s) even if hash is identical (repeated card round)
+            # - Previously in result/transition/searching state
             hash_mismatch = False
             if card_hash and self._last_question_hash:
                 hash_mismatch = (self.hex_hash_distance(card_hash, self._last_question_hash) > 8)
 
+            options_mismatch = False
+            if options and self.active_session and self.active_session.options:
+                common = set(o.lower().strip() for o in options) & set(o.lower().strip() for o in self.active_session.options)
+                if len(common) <= 1 and len(options) >= 3:
+                    options_mismatch = True
+
+            was_in_result_or_transition = (
+                self.current_state in (
+                    QuizState.RESULT_DETECTED,
+                    QuizState.VERIFYING,
+                    QuizState.LEARNING,
+                    QuizState.TRANSITION
+                )
+            )
+
             is_new_question = (
                 self.active_session is None or
                 hash_mismatch or
+                options_mismatch or
                 self.active_session.result_processed or
-                (now - self._last_question_time > 4.0 and self.active_session.has_predicted)
+                was_in_result_or_transition
             )
 
             if is_new_question:
@@ -161,18 +179,29 @@ class ContextAnalyzer:
 
         return self.current_state
 
+    def mark_ocr_status(self, is_valid: bool, options: Optional[List[str]] = None):
+        """Records current OCR validation status for the session."""
+        if self.active_session is not None:
+            self.active_session.ocr_validated = is_valid
+            if options:
+                self.active_session.options = options
+
     def mark_analyzing(self):
         """Marks state as actively computing visual inferences."""
         if self.active_session:
             self.current_state = QuizState.ANALYZING
 
     def mark_predicted(self, card_name: str, slot_index: Optional[int]):
-        """Records that prediction was emitted for the active question."""
+        """Records that a valid prediction was emitted for the active question."""
         if self.active_session is not None:
-            self.active_session.predicted_name = card_name
-            self.active_session.predicted_slot = slot_index
-            self.active_session.has_predicted = True
-            self.current_state = QuizState.ANSWER_DISPLAYED
+            # Only mark has_predicted if an actual card was predicted (not a waiting/recovery message)
+            if card_name and not card_name.lower().startswith("waiting") and slot_index is not None:
+                self.active_session.predicted_name = card_name
+                self.active_session.predicted_slot = slot_index
+                self.active_session.has_predicted = True
+                self.current_state = QuizState.ANSWER_DISPLAYED
+            else:
+                self.current_state = QuizState.ANALYZING
 
     def mark_verifying(self):
         """Marks that result verification is in progress."""

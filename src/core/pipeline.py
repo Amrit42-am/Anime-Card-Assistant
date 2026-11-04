@@ -227,8 +227,11 @@ class QuizPipeline:
             logger.info("Pipeline live prediction: %s (Slot: %s, Confidence: %.2f from %s) in %.1f ms [%s]",
                         result.card_name, result.button_slot, result.confidence, result.matched_from, result.processing_time_ms, result.prediction_stage)
 
-            # Mark predicted in context analyzer
-            self.context_analyzer.mark_predicted(result.card_name, result.button_slot)
+            # Mark predicted in context analyzer ONLY when 4 valid options exist and result was matched
+            if has_four_valid and result.status == "matched" and result.button_slot is not None:
+                self.context_analyzer.mark_predicted(result.card_name, result.button_slot)
+            else:
+                self.context_analyzer.mark_ocr_status(is_valid=False)
 
             # Register with adaptive learning for upcoming result pairing ONLY when all 4 options are resolved
             if has_four_valid and self.adaptive_learning and self.matcher:
@@ -451,6 +454,8 @@ class QuizPipeline:
 
                     self.last_result = stab_result
                     answer_res = stab_result
+                    if stab_result.status == "matched" and stab_result.button_slot is not None:
+                        self.context_analyzer.mark_predicted(stab_result.card_name, stab_result.button_slot)
 
         # 4. State: RESULT_REVEALED -> Process ground-truth automatic learning
         elif (
