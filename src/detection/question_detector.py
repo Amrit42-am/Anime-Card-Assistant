@@ -106,28 +106,39 @@ class QuestionDetector:
             return False
 
         # 2. Quadrant button validation across all 4 individual slots
-        if button_frames and len(button_frames) == 4:
-            valid_btn_count = 0
-            for b in button_frames:
-                if b is None or b.size == 0 or b.ndim < 2:
-                    continue
-                bh, bw = b.shape[:2]
-                if bh < 15 or bw < 30:
-                    continue
-                bg = cv2.cvtColor(b, cv2.COLOR_BGR2GRAY) if b.ndim == 3 else b
-                std_val = float(np.std(bg))
-                if std_val < 8.0:
-                    continue
+        if not button_frames or len(button_frames) != 4:
+            oh, ow = options_frame.shape[:2]
+            half_h = oh // 2
+            half_w = ow // 2
+            pad_x = 4
+            pad_y = 4
+            tl = options_frame[pad_y:half_h - pad_y, pad_x:half_w - pad_x]
+            tr = options_frame[pad_y:half_h - pad_y, half_w + pad_x:ow - pad_x]
+            bl = options_frame[half_h + pad_y:oh - pad_y, pad_x:half_w - pad_x]
+            br = options_frame[half_h + pad_y:oh - pad_y, half_w + pad_x:ow - pad_x]
+            button_frames = [tl, tr, bl, br]
 
-                # Measure edge density inside the button (text & borders)
-                b_edges = cv2.Canny(bg, 50, 150)
-                edge_density = float(np.count_nonzero(b_edges) / bg.size)
-                # Buttons with text/borders have structured edge density
-                if 0.012 <= edge_density <= 0.45:
-                    valid_btn_count += 1
+        valid_btn_count = 0
+        for b in button_frames:
+            if b is None or b.size == 0 or b.ndim < 2:
+                continue
+            bh, bw = b.shape[:2]
+            if bh < 15 or bw < 30:
+                continue
+            bg = cv2.cvtColor(b, cv2.COLOR_BGR2GRAY) if b.ndim == 3 else b
+            std_val = float(np.std(bg))
+            if std_val < 8.0:
+                continue
 
-            if valid_btn_count < 4:
-                return False
+            # Measure edge density inside the button (text & borders)
+            b_edges = cv2.Canny(bg, 50, 150)
+            edge_density = float(np.count_nonzero(b_edges) / bg.size)
+            # Buttons with text/borders have structured edge density
+            if 0.012 <= edge_density <= 0.45:
+                valid_btn_count += 1
+
+        if valid_btn_count < 4:
+            return False
 
         return True
 

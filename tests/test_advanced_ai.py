@@ -465,6 +465,7 @@ def test_insufficient_candidates_never_produces_confirmed_answer():
 
 def test_overlay_window_flags_and_visibility():
     """Verify FloatingOverlay window flags prevent focus stealing and remain visible on focus switch."""
+    pytest.importorskip("PySide6")
     from PySide6.QtWidgets import QApplication
     from PySide6.QtCore import Qt
     from src.ui.overlay import FloatingOverlay

@@ -541,11 +541,10 @@ def test_refreshed_ocr_candidates_synchronize_pipeline(pipeline):
         # Verify pending question in adaptive learning updated options without touching blurred image
         pending_names = pipeline.adaptive_learning.pending_question.option_names
         assert "Celestial Warrior" in pending_names, "AdaptiveLearning pending question options must be updated!"
-        np.testing.assert_array_equal(
+        assert np.array_equal(
             pipeline.adaptive_learning.pending_question.blurred_image,
-            orig_blurred_img,
-            err_msg="Original blurred question image must never be overwritten on subsequent inference frames!"
-        )
+            orig_blurred_img
+        ), "Original blurred question image must never be overwritten on subsequent inference frames!"
     finally:
         pipeline.capture.capture_quiz_bundle = orig_capture
 
