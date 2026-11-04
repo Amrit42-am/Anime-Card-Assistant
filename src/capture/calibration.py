@@ -7,8 +7,6 @@ and answer options box with live visual preview.
 """
 
 import logging
-from pathlib import Path
-from typing import Optional
 
 import cv2
 import numpy as np
@@ -19,7 +17,7 @@ from PySide6.QtWidgets import (
     QPushButton, QSpinBox, QDoubleSpinBox, QGroupBox, QGridLayout
 )
 
-from src.capture.region_manager import CalibrationConfig, RectRegion, RelativeRegion
+from src.capture.region_manager import RectRegion, RelativeRegion
 from src.capture.screen_capture import ScreenCapture
 
 logger = logging.getLogger("calibration_ui")

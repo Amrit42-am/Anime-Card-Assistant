@@ -10,7 +10,7 @@ from the green button using OCR.
 
 from dataclasses import dataclass
 import logging
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Tuple
 import cv2
 import numpy as np
 

@@ -10,8 +10,7 @@ clean, confirmed samples into permanent learned blur memory.
 
 from dataclasses import dataclass
 import logging
-import time
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 import numpy as np
 
 from src.recognition.image_encoder import BaseImageEncoder

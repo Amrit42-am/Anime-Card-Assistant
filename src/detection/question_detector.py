@@ -11,7 +11,7 @@ Allows repeated cards across consecutive rounds without blanket cooldown suppres
 from dataclasses import dataclass
 import logging
 import time
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Any, List, Tuple
 import cv2
 import numpy as np
 

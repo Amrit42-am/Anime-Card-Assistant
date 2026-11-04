@@ -14,7 +14,7 @@ import mss
 import numpy as np
 
 from src.capture.region_manager import CalibrationConfig, RectRegion
-from src.capture.game_locator import GameLocator, ResolvedGameRegions
+from src.capture.game_locator import GameLocator
 
 logger = logging.getLogger("screen_capture")
 
@@ -183,10 +183,7 @@ class ScreenCapture:
 
         bundle = self.capture_quiz_bundle()
         game_frame = bundle["game_frame"]
-        card_frame = bundle["card_frame"]
-        options_frame = bundle["options_frame"]
         button_frames = bundle.get("button_frames", [])
-        resolved = bundle.get("resolved_regions")
 
         annotated = game_frame.copy()
         gh, gw = game_frame.shape[:2]

@@ -11,7 +11,7 @@ from collections import deque
 from dataclasses import dataclass
 import logging
 import time
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, Dict, Any
 
 from src.ai.candidate_reasoner import ReasonedAnswer
 

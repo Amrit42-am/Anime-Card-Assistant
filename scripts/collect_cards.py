@@ -11,7 +11,6 @@ Supports resuming interrupted downloads and generates a validation report.
 
 import json
 import logging
-import os
 import re
 import sqlite3
 import sys

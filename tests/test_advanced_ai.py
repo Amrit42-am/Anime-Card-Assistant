@@ -20,7 +20,7 @@ from src.ai.temporal_analyzer import TemporalAnalyzer
 from src.ai.context_analyzer import ContextAnalyzer, QuizState
 from src.ai.candidate_reasoner import CandidateReasoner, ReasonedAnswer
 from src.ai.model_manager import ModelManager
-from src.ai.adaptive_learning import AdaptiveLearning, LearningOutcome
+from src.ai.adaptive_learning import AdaptiveLearning
 from src.ocr.option_reader import CandidateOption, OptionReader
 from src.recognition.image_matcher import ImageMatcher
 from src.memory.blur_memory import BlurMemorySystem
@@ -321,7 +321,6 @@ def test_gradual_card_unblurring_triggers_inference():
 
     # Frame 2-4: gradual unblurring (+4 sharpness delta each frame, below 15.0 per-frame and cumulative)
     # Mocking compute_image_sharpness or frames with gradual sharpness
-    base_sharp = p1.card_sharpness
     for step in [4.0, 8.0, 12.0]:
         bundle_step = {
             "card_frame": base_img.copy(),
@@ -471,7 +470,7 @@ def test_overlay_window_flags_and_visibility():
     from src.ui.overlay import FloatingOverlay
     from src.core.pipeline import QuizPipeline
 
-    app = QApplication.instance() or QApplication([])
+    _ = QApplication.instance() or QApplication([])
 
     # Mock pipeline for overlay
     pipeline = QuizPipeline(auto_init_models=False)

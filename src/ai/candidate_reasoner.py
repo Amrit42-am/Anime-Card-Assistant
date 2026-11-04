@@ -9,14 +9,14 @@ against synthetic blur profiles and verified blur memory, and resolves 2x2 grid 
 
 from dataclasses import dataclass
 import logging
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any
 import numpy as np
 from rapidfuzz import fuzz
 
 from src.ocr.option_reader import CandidateOption, OptionReader
-from src.recognition.image_matcher import ImageMatcher, MatchResult
+from src.recognition.image_matcher import ImageMatcher
 from src.recognition.image_encoder import BaseImageEncoder
-from src.ai.confidence_engine import ConfidenceEngine, ConfidenceVerdict
+from src.ai.confidence_engine import ConfidenceEngine
 
 logger = logging.getLogger("candidate_reasoner")
 
@@ -198,6 +198,8 @@ class CandidateReasoner:
             explanation = verdict.explanation
             display_card_name = top_name
             calibrated_conf = verdict.calibrated_confidence
+
+        logger.debug("Reasoned answer: %s (slot %s, conf %.2f): %s", display_card_name, assigned_slot, calibrated_conf, explanation)
 
         return ReasonedAnswer(
             card_name=display_card_name,

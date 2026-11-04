@@ -9,7 +9,7 @@ with labels for visual inspection and dataset validation.
 import json
 import math
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 DATA_JSON = Path("data/cards.json")
 OUTPUT_IMAGE = Path("data/card_contact_sheet.jpg")
@@ -64,7 +64,7 @@ def create_contact_sheet(
                     offset_x = x + (thumb_w - im_rgb.width) // 2
                     offset_y = y + (thumb_h - im_rgb.height) // 2
                     sheet.paste(im_rgb, (offset_x, offset_y))
-            except Exception as e:
+            except Exception:
                 draw.rectangle([x, y, x + thumb_w, y + thumb_h], fill=(120, 30, 30))
                 draw.text((x + 5, y + 5), "ERROR", fill=(255, 255, 255))
         else:

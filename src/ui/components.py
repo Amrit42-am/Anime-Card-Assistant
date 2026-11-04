@@ -9,7 +9,7 @@ from typing import List, Optional
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QLineEdit, QListWidget, QListWidgetItem, QFrame
+    QPushButton, QLineEdit, QListWidget, QListWidgetItem
 )
 
 

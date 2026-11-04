@@ -5,9 +5,8 @@ Unit tests for macOS Display Monitoring, Window Tracking, and Game Locating.
 """
 
 import numpy as np
-import pytest
 
-from src.capture.display_monitor import DisplayMonitor, DisplayInfo
+from src.capture.display_monitor import DisplayMonitor
 from src.capture.window_tracker import WindowTracker, WindowInfo
 from src.capture.game_locator import GameLocator, ResolvedGameRegions
 from src.capture.region_manager import CalibrationConfig, RectRegion, RelRegion

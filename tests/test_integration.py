@@ -12,7 +12,6 @@ import cv2
 import numpy as np
 import pytest
 
-from src.capture.region_manager import CalibrationConfig
 from src.core.pipeline import QuizPipeline
 from src.core.decision_engine import AnswerResult
 from src.ai.context_analyzer import QuizState
@@ -556,8 +555,6 @@ def test_invalid_ocr_grid_change_invalidates_stale_candidates(pipeline):
     2. Stale cached candidates are cleared and pipeline.current_candidates is emptied.
     3. Stale candidates are not incorrectly reused.
     """
-    from src.ai.perception_engine import OCRSource
-
     options_a = ["Green Bomber", "Harmonious Soul", "Shadow Duelist", "Soul King"]
     bundle_a = create_mock_quiz_frame("Green Bomber", options_a)
 

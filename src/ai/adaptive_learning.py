@@ -9,8 +9,7 @@ disagreements separately, and updating verified local blur memory.
 
 from dataclasses import dataclass
 import logging
-import time
-from typing import Optional, List, Dict, Any
+from typing import Optional, List
 import numpy as np
 
 from src.recognition.image_encoder import ImageEncoder

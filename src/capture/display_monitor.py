@@ -8,7 +8,7 @@ high-performance full-screen frame capture without writing to disk.
 
 from dataclasses import dataclass
 import logging
-from typing import List, Optional, Tuple, Dict, Any
+from typing import List, Optional, Tuple
 import cv2
 import mss
 import numpy as np

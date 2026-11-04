@@ -8,10 +8,10 @@ and resizes, falling back to manual calibration coordinates when necessary.
 
 from dataclasses import dataclass
 import logging
-from typing import Optional, Dict, Any, List
+from typing import Optional, List
 
-from src.capture.display_monitor import DisplayMonitor, DisplayInfo
-from src.capture.window_tracker import WindowTracker, WindowInfo
+from src.capture.display_monitor import DisplayMonitor
+from src.capture.window_tracker import WindowTracker
 from src.capture.region_manager import CalibrationConfig, RectRegion, RelRegion
 
 logger = logging.getLogger("game_locator")

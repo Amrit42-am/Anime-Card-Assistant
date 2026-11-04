@@ -7,7 +7,7 @@ side of the desktop to display real-time card predictions without obstructing ga
 """
 
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional
 
 from PySide6.QtCore import Qt, QPoint
 from PySide6.QtGui import QMouseEvent, QColor

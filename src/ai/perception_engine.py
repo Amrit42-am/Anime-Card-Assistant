@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from enum import Enum
 import logging
 import time
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any
 import cv2
 import numpy as np
 

@@ -16,21 +16,15 @@ Comprehensive Test Suite for Roblox Result-Based Automatic Learning & 2x2 Grid G
 """
 
 import time
-from typing import List, Optional, Tuple
+from typing import List
 import cv2
 import numpy as np
 import pytest
 
 from src.capture.region_manager import CalibrationConfig, RectRegion, RelativeRegion
-from src.capture.screen_capture import ScreenCapture
 from src.core.pipeline import QuizPipeline
 from src.detection.question_detector import QuestionDetector
-from src.learning.result_detector import (
-    ResultDetector,
-    get_color_ratios,
-    get_correct_option,
-    compute_image_sharpness
-)
+from src.learning.result_detector import ResultDetector
 from src.learning.sample_collector import AutomaticSampleCollector
 
 

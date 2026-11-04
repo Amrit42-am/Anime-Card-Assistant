@@ -12,7 +12,7 @@ from typing import List, Optional, Dict, Any
 import cv2
 import numpy as np
 
-from src.memory.database import MemoryDatabase, BlurSampleRecord
+from src.memory.database import MemoryDatabase
 
 logger = logging.getLogger("blur_memory")
 

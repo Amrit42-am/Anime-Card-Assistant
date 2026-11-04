@@ -13,7 +13,8 @@ ResultDetector -> AdaptiveLearning -> Dual Verification -> Memory Update.
 
 import logging
 import time
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Tuple, List
+import numpy as np
 
 from src.capture.region_manager import CalibrationConfig
 from src.capture.display_monitor import DisplayMonitor
@@ -21,20 +22,20 @@ from src.capture.window_tracker import WindowTracker
 from src.capture.game_locator import GameLocator
 from src.capture.screen_capture import ScreenCapture
 from src.detection.question_detector import QuestionDetector, QuestionEvent
-from src.ocr.option_reader import OptionReader
-from src.recognition.image_encoder import BaseImageEncoder, get_image_encoder
+from src.ocr.option_reader import OptionReader, CandidateOption
+from src.recognition.image_encoder import BaseImageEncoder
 from src.recognition.image_matcher import ImageMatcher
 from src.memory.blur_memory import BlurMemorySystem
 from src.core.decision_engine import AnswerDecisionEngine, AnswerResult
 from src.learning.result_detector import ResultDetector, ResultDetectionEvent
-from src.learning.sample_collector import AutomaticSampleCollector, CollectionReport
+from src.learning.sample_collector import CollectionReport
 from src.ai.model_manager import ModelManager
 from src.ai.perception_engine import PerceptionEngine, PerceptionFrame, OCRSource
-from src.ai.context_analyzer import ContextAnalyzer, QuizState
+from src.ai.context_analyzer import ContextAnalyzer
 from src.ai.candidate_reasoner import CandidateReasoner, ReasonedAnswer
 from src.ai.temporal_analyzer import TemporalAnalyzer
 from src.ai.confidence_engine import ConfidenceEngine
-from src.ai.adaptive_learning import AdaptiveLearning, LearningOutcome
+from src.ai.adaptive_learning import AdaptiveLearning
 
 logger = logging.getLogger("pipeline")
 
@@ -141,7 +142,7 @@ class QuizPipeline:
         event: QuestionEvent = self.detector.process_frame_bundle(p_frame)
 
         # 2. Advance ContextAnalyzer
-        state = self.context_analyzer.evaluate_transition(
+        _ = self.context_analyzer.evaluate_transition(
             is_active_question=event.question_detected or (
                 self.detector.current_state in ("ACTIVE_QUESTION", "ANSWER_RECOGNITION") and
                 not (self.context_analyzer.active_session and self.context_analyzer.active_session.result_processed)

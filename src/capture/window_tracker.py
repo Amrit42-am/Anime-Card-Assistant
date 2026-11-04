@@ -9,7 +9,7 @@ and fullscreen transitions, and filters out non-game overlay windows.
 from dataclasses import dataclass
 import logging
 import os
-from typing import Optional, List, Dict, Any
+from typing import Optional, List
 
 logger = logging.getLogger("window_tracker")
 

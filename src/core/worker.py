@@ -8,13 +8,10 @@ using PySide6 QThread to ensure the floating overlay UI remains smooth and respo
 
 import logging
 import time
-from typing import Optional, Tuple
 
 from PySide6.QtCore import QThread, Signal
 
 from src.core.pipeline import QuizPipeline
-from src.core.decision_engine import AnswerResult
-from src.learning.sample_collector import CollectionReport
 
 logger = logging.getLogger("worker")
 
@@ -91,9 +88,9 @@ class PipelineWorker(QThread):
         logger.info("PipelineWorker stopped.")
         self.sig_status.emit("STOPPED")
 
-    def stop(self):
+    def stop(self, timeout_ms: int = 1500):
         self._running = False
-        self.wait(1000)
+        self.wait(timeout_ms)
 
     def pause(self):
         self._paused = True
@@ -106,8 +103,4 @@ class PipelineWorker(QThread):
     def toggle_pause(self) -> bool:
         self._paused = not self._paused
         return self._paused
-
-    def stop(self):
-        self._running = False
-        self.wait(1500)
 

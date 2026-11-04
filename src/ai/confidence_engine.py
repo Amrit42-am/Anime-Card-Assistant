@@ -9,7 +9,7 @@ and temporal agreement into calibrated confidence scores with explainable verdic
 from dataclasses import dataclass
 import logging
 import math
-from typing import Optional, List
+from typing import List
 
 logger = logging.getLogger("confidence_engine")
 

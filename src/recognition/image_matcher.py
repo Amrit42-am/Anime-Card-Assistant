@@ -15,7 +15,7 @@ from typing import List, Dict, Any, Optional
 import numpy as np
 from rapidfuzz import process, fuzz
 
-from src.recognition.confidence import ConfidenceCalibrator, ConfidenceReport
+from src.recognition.confidence import ConfidenceCalibrator
 
 logger = logging.getLogger("image_matcher")
 

@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 import logging
 import os
 from pathlib import Path
-from typing import Union, List
+from typing import Union, List, Optional
 
 # Enforce offline mode at runtime
 os.environ.setdefault("HF_HUB_OFFLINE", "1")

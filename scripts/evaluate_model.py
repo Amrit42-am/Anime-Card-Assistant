@@ -27,17 +27,13 @@ if str(PROJECT_ROOT) not in sys.path:
 import cv2
 import numpy as np
 
-from src.recognition.image_encoder import get_image_encoder
 from src.recognition.image_matcher import ImageMatcher
 from src.memory.blur_memory import BlurMemorySystem
 from src.memory.database import MemoryDatabase
 from src.ai.model_manager import ModelManager
 from src.capture.display_monitor import DisplayMonitor
 from src.capture.window_tracker import WindowTracker
-from src.capture.game_locator import GameLocator
-from src.ocr.option_reader import OptionReader
 from src.core.pipeline import QuizPipeline
-from src.core.decision_engine import AnswerResult
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
 logger = logging.getLogger("evaluate_model")

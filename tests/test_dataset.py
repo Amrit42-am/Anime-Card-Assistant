@@ -11,7 +11,6 @@ Validates the collected card dataset integrity:
 import json
 import sqlite3
 from pathlib import Path
-import pytest
 from PIL import Image
 
 DATA_JSON = Path("data/cards.json")
